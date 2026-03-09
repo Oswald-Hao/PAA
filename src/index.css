@@ -1,2 +1,50 @@
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
+
+@theme {
+  --color-background: var(--bg-app);
+  --color-panel: var(--bg-panel);
+  --color-content: var(--text-main);
+  --color-muted: var(--text-muted);
+  --color-border-subtle: var(--border-main);
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-secondary: var(--secondary);
+  --color-secondary-hover: var(--secondary-hover);
+}
+
+:root {
+  --bg-app: #f4f4f5;
+  --bg-panel: #ffffff;
+  --text-main: #18181b;
+  --text-muted: #71717a;
+  --border-main: #e4e4e7;
+  --primary: #4f46e5;
+  --primary-hover: #4338ca;
+  --secondary: #f4f4f5;
+  --secondary-hover: #e4e4e7;
+}
+
+[data-theme="dark"] {
+  --bg-app: #09090b;
+  --bg-panel: #18181b;
+  --text-main: #f4f4f5;
+  --text-muted: #a1a1aa;
+  --border-main: #27272a;
+  --primary: #10b981;
+  --primary-hover: #059669;
+  --secondary: #27272a;
+  --secondary-hover: #3f3f46;
+}
+
+[data-theme="sepia"] {
+  --bg-app: #f4ecd8;
+  --bg-panel: #fbf0d9;
+  --text-main: #5b4636;
+  --text-muted: #8c7b6b;
+  --border-main: #e8dcc4;
+  --primary: #d97743;
+  --primary-hover: #c46536;
+  --secondary: #e8dcc4;
+  --secondary-hover: #d5c8ae;
+}
