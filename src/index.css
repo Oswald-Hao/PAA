@@ -25,7 +25,7 @@
   --secondary-hover: #e4e4e7;
 }
 
-[data-theme="dark"] {
+:root[data-theme="dark"] {
   --bg-app: #09090b;
   --bg-panel: #18181b;
   --text-main: #f4f4f5;
@@ -37,7 +37,7 @@
   --secondary-hover: #3f3f46;
 }
 
-[data-theme="sepia"] {
+:root[data-theme="sepia"] {
   --bg-app: #f4ecd8;
   --bg-panel: #fbf0d9;
   --text-main: #5b4636;
