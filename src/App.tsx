@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, forwardRef, useImperativeHandle } from 'react';
-import { Upload, Settings, MessageSquare, X, Send, Bot, User, MousePointer2, Highlighter, Pen, Eraser, ZoomIn, ZoomOut, Type, FileText, Wand2, Languages, AlignLeft, Check, Undo2, Download, Sparkles, FilePlus2, BarChart3, ChevronRight } from 'lucide-react';
+import { Upload, Settings, MessageSquare, X, Send, Bot, User, MousePointer2, Highlighter, Pen, Eraser, ZoomIn, ZoomOut, Type, FileText, Wand2, Languages, AlignLeft, Check, Undo2, Download, Sparkles, FilePlus2, BarChart3, ChevronRight, Edit3 } from 'lucide-react';
 import { GoogleGenAI } from '@google/genai';
 import { Document, Page, pdfjs } from 'react-pdf';
 import Markdown from 'react-markdown';
@@ -148,16 +148,43 @@ const PageOverlay = forwardRef<PageOverlayRef, PageOverlayProps>(({ tool, drawCo
     return () => observer.disconnect();
   }, [scale]);
 
+  const wrapText = (context: CanvasRenderingContext2D, text: string, x: number, y: number, maxWidth: number, lineHeight: number) => {
+    const paragraphs = text.split('\n');
+    let currentY = y;
+
+    paragraphs.forEach(paragraph => {
+      let line = '';
+      
+      for (let n = 0; n < paragraph.length; n++) {
+        const char = paragraph[n];
+        const testLine = line + char;
+        const metrics = context.measureText(testLine);
+        const testWidth = metrics.width;
+        
+        if (testWidth > maxWidth && n > 0) {
+          context.fillText(line, x, currentY);
+          line = char;
+          currentY += lineHeight;
+        } else {
+          line = testLine;
+        }
+      }
+      context.fillText(line, x, currentY);
+      currentY += lineHeight;
+    });
+  };
+
   const commitText = () => {
     if (textPos && textVal.trim() && ctx) {
       saveState();
       ctx.font = `${textSize * scale}px sans-serif`;
       ctx.fillStyle = textColor;
       ctx.globalCompositeOperation = 'source-over';
-      const lines = textVal.split('\n');
-      lines.forEach((line, i) => {
-        ctx.fillText(line, textPos.x, textPos.y + ((i + 1) * (textSize * scale * 1.2)));
-      });
+      
+      const maxWidth = (canvasRef.current?.width || 800) - textPos.x - 20; // 20px padding from right edge
+      const lineHeight = textSize * scale * 1.5;
+      
+      wrapText(ctx, textVal, textPos.x, textPos.y + (textSize * scale), maxWidth, lineHeight);
     }
     setTextPos(null);
     setTextVal('');
@@ -179,10 +206,11 @@ const PageOverlay = forwardRef<PageOverlayRef, PageOverlayProps>(({ tool, drawCo
       ctx.font = `${textSize * scale}px sans-serif`;
       ctx.fillStyle = textColor;
       ctx.globalCompositeOperation = 'source-over';
-      const lines = pendingStampText.split('\n');
-      lines.forEach((line, i) => {
-        ctx.fillText(line, x, y + ((i + 1) * (textSize * scale * 1.2)));
-      });
+      
+      const maxWidth = canvas.width - x - 20;
+      const lineHeight = textSize * scale * 1.5;
+      
+      wrapText(ctx, pendingStampText, x, y + (textSize * scale), maxWidth, lineHeight);
       onStamp();
       return;
     }
@@ -247,7 +275,7 @@ const PageOverlay = forwardRef<PageOverlayRef, PageOverlayProps>(({ tool, drawCo
         onTouchStart={startDrawing}
         onTouchMove={draw}
         onTouchEnd={stopDrawing}
-        className={`absolute inset-0 touch-none ${pendingStampText ? 'cursor-crosshair' : ''}`}
+        className={`absolute inset-0 touch-none ${pendingStampText ? 'cursor-crosshair' : tool === 'text' ? 'cursor-text' : ''}`}
       />
       {textPos && tool === 'text' && (
         <textarea
@@ -338,7 +366,7 @@ export default function App() {
   const [drawSize, setDrawSize] = useState(3);
   const [highlightColor, setHighlightColor] = useState('#ff003c');
   const [highlightSize, setHighlightSize] = useState(24);
-  const [textColor, setTextColor] = useState('#ffffff');
+  const [textColor, setTextColor] = useState('#000000');
   const [textSize, setTextSize] = useState(16);
   
   const [aiConfig, setAiConfig] = useState<AIConfig>({
@@ -398,7 +426,7 @@ export default function App() {
     setMessages([{
       id: 'welcome',
       role: 'ai',
-      content: '我已经为您创建了一份空白的 PDF 草稿。我们可以开始创作论文了！您可以告诉我您的主题，或者让我帮您列一个大纲。如果您需要插入图表，只需告诉我数据和类型即可。'
+      content: '我已经为您创建了一份空白的 PDF 草稿。我们可以开始创作论文了！您可以告诉我您的主题，或者让我帮您列一个大纲。如果您需要插入图表，只需告诉我数据和类型即可。您也可以直接点击下方的“手动输入文字”按钮，自己打字插入到 PDF 中。'
     }]);
     setSelectedText('');
     setScale(1.0);
@@ -637,7 +665,7 @@ export default function App() {
     });
   };
 
-  const ToolButton = ({ icon, label, active, onClick, disabled, className }: { icon: React.ReactNode, label: string, active: boolean, onClick: () => void, disabled?: boolean, className?: string }) => (
+  const ToolButton = ({ icon, label, active, onClick, disabled, className }: { icon: React.ReactElement, label: string, active: boolean, onClick: () => void, disabled?: boolean, className?: string }) => (
     <button
       onClick={onClick}
       disabled={disabled}
@@ -650,7 +678,7 @@ export default function App() {
       title={label}
     >
       {active && <div className="absolute inset-0 bg-gradient-to-tr from-white/0 via-white/20 to-white/0 translate-x-[-100%] animate-[shimmer_1.5s_infinite]" />}
-      {React.cloneElement(icon as React.ReactElement, { className: 'w-5 h-5 relative z-10' })}
+      {React.cloneElement(icon as React.ReactElement<any>, { className: 'w-5 h-5 relative z-10' })}
     </button>
   );
 
@@ -709,6 +737,18 @@ export default function App() {
             </div>
             <span className="text-sm font-bold tracking-wide">在 PDF 任意位置点击即可插入文字</span>
             <button onClick={() => setPendingStampText(null)} className="ml-2 hover:bg-white/20 rounded-full p-1.5 transition-colors">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        )}
+
+        {pdfTool === 'text' && !pendingStampText && (
+          <div className="absolute top-20 left-1/2 -translate-x-1/2 z-30 bg-panel text-content px-6 py-3 rounded-2xl shadow-[0_10px_40px_rgba(0,0,0,0.2)] flex items-center gap-3 animate-in slide-in-from-top-4 fade-in duration-300 border border-primary/30 backdrop-blur-md">
+            <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center animate-pulse text-primary">
+               <Type className="w-4 h-4" />
+            </div>
+            <span className="text-sm font-bold tracking-wide">在 PDF 任意位置点击即可开始输入文字</span>
+            <button onClick={() => setPdfTool('cursor')} className="ml-2 hover:bg-secondary rounded-full p-1.5 transition-colors text-muted hover:text-content">
               <X className="w-4 h-4" />
             </button>
           </div>
@@ -912,7 +952,10 @@ export default function App() {
                     {msg.role === 'ai' && msg.content && !isLoading && (
                       <div className="flex items-center gap-2 mt-1 ml-1">
                         <button 
-                          onClick={() => setPendingStampText(msg.content)}
+                          onClick={() => {
+                            setPdfTool('cursor');
+                            setPendingStampText(msg.content);
+                          }}
                           className="text-[11px] font-bold uppercase tracking-wider flex items-center gap-1.5 text-muted hover:text-primary transition-all bg-panel px-3 py-1.5 rounded-lg border border-border-subtle hover:border-primary/50 hover:shadow-[0_0_10px_rgba(var(--color-primary),0.2)] group"
                         >
                           <MousePointer2 className="w-3 h-3 group-hover:-translate-y-0.5 transition-transform" /> 插入到 PDF
@@ -973,6 +1016,17 @@ export default function App() {
               </div>
             </div>
           )}
+          <div className="flex gap-2 mb-2">
+            <button 
+              onClick={() => {
+                setPdfTool('text');
+                // Optional: show a small toast or hint that text mode is active
+              }}
+              className="text-[11px] font-bold uppercase tracking-wider flex items-center gap-1.5 text-muted hover:text-primary transition-all bg-panel px-3 py-1.5 rounded-lg border border-border-subtle hover:border-primary/50 hover:shadow-[0_0_10px_rgba(var(--color-primary),0.2)]"
+            >
+              <Edit3 className="w-3 h-3" /> 手动输入文字
+            </button>
+          </div>
           <div className="relative flex items-end group">
             <textarea
               ref={chatInputRef}
