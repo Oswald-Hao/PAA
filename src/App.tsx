@@ -1,11 +1,18 @@
 import React, { useState, useEffect, useRef, forwardRef, useImperativeHandle } from 'react';
-import { Upload, Settings, MessageSquare, X, Send, Bot, User, MousePointer2, Highlighter, Pen, Eraser, ZoomIn, ZoomOut, Type, FileText, Wand2, Languages, AlignLeft, Check, Undo2, Download } from 'lucide-react';
+import { Upload, Settings, MessageSquare, X, Send, Bot, User, MousePointer2, Highlighter, Pen, Eraser, ZoomIn, ZoomOut, Type, FileText, Wand2, Languages, AlignLeft, Check, Undo2, Download, Sparkles, FilePlus2, BarChart3, ChevronRight } from 'lucide-react';
 import { GoogleGenAI } from '@google/genai';
 import { Document, Page, pdfjs } from 'react-pdf';
 import Markdown from 'react-markdown';
-import { PDFDocument } from 'pdf-lib';
+import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
+import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
+import { clsx, type ClassValue } from 'clsx';
+import { twMerge } from 'tailwind-merge';
 import 'react-pdf/dist/Page/AnnotationLayer.css';
 import 'react-pdf/dist/Page/TextLayer.css';
+
+function cn(...inputs: ClassValue[]) {
+  return twMerge(clsx(inputs));
+}
 
 // Initialize pdfjs worker
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
@@ -18,10 +25,15 @@ type Message = {
   role: 'user' | 'ai';
   content: string;
   context?: string;
+  chartData?: any;
 };
 
+type AIProvider = 'gemini' | 'zhipu';
+
 type AIConfig = {
+  provider: AIProvider;
   model: string;
+  apiKey: string;
   systemInstruction: string;
   temperature: number;
 };
@@ -244,7 +256,7 @@ const PageOverlay = forwardRef<PageOverlayRef, PageOverlayProps>(({ tool, drawCo
           onChange={(e) => setTextVal(e.target.value)}
           onBlur={commitText}
           placeholder="输入文字..."
-          className="absolute z-20 bg-white/90 border-2 border-primary shadow-lg rounded-md p-2 outline-none resize-both text-zinc-900"
+          className="absolute z-20 bg-white/90 border-2 border-primary shadow-[0_0_15px_rgba(var(--color-primary),0.5)] rounded-md p-2 outline-none resize-both text-zinc-900 backdrop-blur-sm"
           style={{
             left: textPos.x,
             top: textPos.y,
@@ -259,6 +271,49 @@ const PageOverlay = forwardRef<PageOverlayRef, PageOverlayProps>(({ tool, drawCo
   );
 });
 
+// Chart Component
+const DynamicChart = ({ data, type }: { data: any, type: string }) => {
+  if (!data || !data.length) return null;
+  
+  const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884d8'];
+  
+  return (
+    <div className="h-64 w-full mt-4 bg-background/50 rounded-xl p-4 border border-border-subtle backdrop-blur-sm">
+      <ResponsiveContainer width="100%" height="100%">
+        {type === 'bar' ? (
+          <BarChart data={data}>
+            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" />
+            <XAxis dataKey="name" stroke="#888" />
+            <YAxis stroke="#888" />
+            <Tooltip contentStyle={{ backgroundColor: 'var(--color-panel)', borderColor: 'var(--color-border-subtle)', borderRadius: '8px' }} />
+            <Legend />
+            <Bar dataKey="value" fill="var(--color-primary)" radius={[4, 4, 0, 0]} />
+          </BarChart>
+        ) : type === 'pie' ? (
+          <PieChart>
+            <Pie data={data} cx="50%" cy="50%" innerRadius={60} outerRadius={80} paddingAngle={5} dataKey="value">
+              {data.map((entry: any, index: number) => (
+                <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+              ))}
+            </Pie>
+            <Tooltip contentStyle={{ backgroundColor: 'var(--color-panel)', borderColor: 'var(--color-border-subtle)', borderRadius: '8px' }} />
+            <Legend />
+          </PieChart>
+        ) : (
+          <LineChart data={data}>
+            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" />
+            <XAxis dataKey="name" stroke="#888" />
+            <YAxis stroke="#888" />
+            <Tooltip contentStyle={{ backgroundColor: 'var(--color-panel)', borderColor: 'var(--color-border-subtle)', borderRadius: '8px' }} />
+            <Legend />
+            <Line type="monotone" dataKey="value" stroke="var(--color-primary)" strokeWidth={2} dot={{ r: 4 }} activeDot={{ r: 6 }} />
+          </LineChart>
+        )}
+      </ResponsiveContainer>
+    </div>
+  );
+};
+
 export default function App() {
   const [pdfFile, setPdfFile] = useState<File | null>(null);
   const [pdfBase64, setPdfBase64] = useState<string | null>(null);
@@ -271,30 +326,26 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   
-  const [theme, setTheme] = useState<'light' | 'dark' | 'sepia'>('light');
-  const [activeTab, setActiveTab] = useState<'chat' | 'write'>('chat');
+  const [theme, setTheme] = useState<'light' | 'dark' | 'sepia'>('dark');
+  const [mode, setMode] = useState<'read' | 'create'>('read');
   
-  // Paper Writing State
-  const [notepadContent, setNotepadContent] = useState('');
-  const [draftPrompt, setDraftPrompt] = useState('');
-  const [aiDraft, setAiDraft] = useState('');
-  const [isDrafting, setIsDrafting] = useState(false);
-
   const [pendingStampText, setPendingStampText] = useState<string | null>(null);
   const [globalHistory, setGlobalHistory] = useState<number[]>([]);
   
   // PDF Tools State
   const [pdfTool, setPdfTool] = useState<'cursor' | 'draw' | 'highlight' | 'text' | 'eraser'>('cursor');
-  const [drawColor, setDrawColor] = useState('#ef4444');
+  const [drawColor, setDrawColor] = useState('#00f0ff');
   const [drawSize, setDrawSize] = useState(3);
-  const [highlightColor, setHighlightColor] = useState('#facc15');
+  const [highlightColor, setHighlightColor] = useState('#ff003c');
   const [highlightSize, setHighlightSize] = useState(24);
-  const [textColor, setTextColor] = useState('#000000');
+  const [textColor, setTextColor] = useState('#ffffff');
   const [textSize, setTextSize] = useState(16);
   
   const [aiConfig, setAiConfig] = useState<AIConfig>({
-    model: 'gemini-3-flash-preview',
-    systemInstruction: '你是一个专业的学术助手。请用中文回答用户的问题，帮助用户阅读、理解和撰写论文。如果你需要帮用户起草内容，请提供结构清晰的文本，以便用户插入到笔记或PDF中。',
+    provider: 'gemini',
+    model: 'gemini-3.1-pro-preview',
+    apiKey: '',
+    systemInstruction: '你是一个顶级的学术助手和论文写手。请用中文回答。你可以帮用户阅读论文，也可以帮用户从零开始创作论文。如果用户需要数据可视化，请返回一个 JSON 格式的图表数据，格式为：```json\n{"chartType": "bar|line|pie", "data": [{"name": "A", "value": 10}]}\n```。',
     temperature: 0.7,
   });
 
@@ -308,10 +359,8 @@ export default function App() {
   }, [theme]);
 
   useEffect(() => {
-    if (activeTab === 'chat') {
-      chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-    }
-  }, [messages, activeTab]);
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
 
   useEffect(() => {
     const handleSelectionChange = () => {
@@ -327,10 +376,48 @@ export default function App() {
     return () => document.removeEventListener('selectionchange', handleSelectionChange);
   }, []);
 
+  const createBlankPdf = async () => {
+    const pdfDoc = await PDFDocument.create();
+    const page = pdfDoc.addPage([595.28, 841.89]); // A4 size
+    const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+    
+    page.drawText('Draft Paper', {
+      x: 50,
+      y: 800,
+      size: 24,
+      font,
+      color: rgb(0.8, 0.8, 0.8),
+    });
+
+    const pdfBytes = await pdfDoc.save();
+    const blob = new Blob([pdfBytes], { type: 'application/pdf' });
+    const file = new File([blob], "draft.pdf", { type: 'application/pdf' });
+    
+    setPdfFile(file);
+    setMode('create');
+    setMessages([{
+      id: 'welcome',
+      role: 'ai',
+      content: '我已经为您创建了一份空白的 PDF 草稿。我们可以开始创作论文了！您可以告诉我您的主题，或者让我帮您列一个大纲。如果您需要插入图表，只需告诉我数据和类型即可。'
+    }]);
+    setSelectedText('');
+    setScale(1.0);
+    setGlobalHistory([]);
+    pageRefs.current = {};
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      const base64 = (reader.result as string).split(',')[1];
+      setPdfBase64(base64);
+    };
+    reader.readAsDataURL(file);
+  };
+
   const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (file && file.type === 'application/pdf') {
       setPdfFile(file);
+      setMode('read');
       setMessages([]);
       setSelectedText('');
       setScale(1.0);
@@ -379,7 +466,7 @@ export default function App() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = 'annotated_paper.pdf';
+      a.download = mode === 'create' ? 'my_paper.pdf' : 'annotated_paper.pdf';
       a.click();
       URL.revokeObjectURL(url);
     } catch (error) {
@@ -388,6 +475,66 @@ export default function App() {
     } finally {
       setIsExporting(false);
     }
+  };
+
+  const callZhipuAPI = async (prompt: string, context: string, base64Pdf: string | null) => {
+    if (!aiConfig.apiKey) {
+      throw new Error("请在设置中配置智谱 API Key");
+    }
+    
+    const messages = [];
+    if (aiConfig.systemInstruction) {
+      messages.push({ role: "system", content: aiConfig.systemInstruction });
+    }
+    
+    let userContent = "";
+    if (context) {
+      userContent += `参考文本：\n"""\n${context}\n"""\n\n`;
+    }
+    userContent += `用户问题：${prompt}`;
+    
+    messages.push({ role: "user", content: userContent });
+
+    const response = await fetch('https://open.bigmodel.cn/api/paas/v4/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${aiConfig.apiKey}`
+      },
+      body: JSON.stringify({
+        model: aiConfig.model || "glm-4",
+        messages: messages,
+        temperature: aiConfig.temperature,
+        stream: false
+      })
+    });
+
+    if (!response.ok) {
+      const err = await response.json();
+      throw new Error(err.error?.message || "智谱 API 请求失败");
+    }
+
+    const data = await response.json();
+    return data.choices[0].message.content;
+  };
+
+  const extractChartData = (text: string) => {
+    const jsonRegex = /```json\n([\s\S]*?)\n```/;
+    const match = text.match(jsonRegex);
+    if (match && match[1]) {
+      try {
+        const parsed = JSON.parse(match[1]);
+        if (parsed.chartType && parsed.data) {
+          return {
+            cleanText: text.replace(jsonRegex, '').trim(),
+            chartData: parsed
+          };
+        }
+      } catch (e) {
+        console.error("Failed to parse chart JSON", e);
+      }
+    }
+    return { cleanText: text, chartData: null };
   };
 
   const sendPrompt = async (promptText: string, contextText: string = '') => {
@@ -403,97 +550,64 @@ export default function App() {
     setMessages((prev) => [...prev, userMessage]);
     setInput('');
     setIsLoading(true);
-    setActiveTab('chat');
 
     const aiMessageId = (Date.now() + 1).toString();
     setMessages((prev) => [...prev, { id: aiMessageId, role: 'ai', content: '' }]);
 
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-      const parts: any[] = [];
-      
-      if (pdfBase64) {
-        parts.push({
-          inlineData: {
-            data: pdfBase64,
-            mimeType: 'application/pdf'
-          }
-        });
-      }
-
-      let fullPrompt = `我附上了一份完整的 PDF 文档。请仔细阅读全文来回答我的问题。\n\n`;
-      if (userMessage.context) {
-        fullPrompt += `我还选中了文档中的这段话，请重点关注：\n"""\n${userMessage.context}\n"""\n\n`;
-      }
-      fullPrompt += `我的问题/要求：${userMessage.content}`;
-      
-      parts.push({ text: fullPrompt });
-
-      const responseStream = await ai.models.generateContentStream({
-        model: aiConfig.model,
-        contents: { parts },
-        config: {
-          systemInstruction: aiConfig.systemInstruction,
-          temperature: aiConfig.temperature,
-        },
-      });
-
       let fullText = '';
-      for await (const chunk of responseStream) {
-        fullText += chunk.text;
-        setMessages((prev) => 
-          prev.map(msg => msg.id === aiMessageId ? { ...msg, content: fullText } : msg)
-        );
+      
+      if (aiConfig.provider === 'zhipu') {
+         fullText = await callZhipuAPI(promptText, contextText, pdfBase64);
+         const { cleanText, chartData } = extractChartData(fullText);
+         setMessages((prev) => 
+            prev.map(msg => msg.id === aiMessageId ? { ...msg, content: cleanText, chartData } : msg)
+         );
+      } else {
+        const ai = new GoogleGenAI({ apiKey: aiConfig.apiKey || process.env.GEMINI_API_KEY });
+        const parts: any[] = [];
+        
+        if (pdfBase64 && mode === 'read') {
+          parts.push({
+            inlineData: {
+              data: pdfBase64,
+              mimeType: 'application/pdf'
+            }
+          });
+        }
+
+        let fullPrompt = mode === 'read' ? `我附上了一份 PDF 文档。\n\n` : `我们正在创作一篇论文。\n\n`;
+        if (userMessage.context) {
+          fullPrompt += `请重点关注这段话：\n"""\n${userMessage.context}\n"""\n\n`;
+        }
+        fullPrompt += `要求：${userMessage.content}`;
+        
+        parts.push({ text: fullPrompt });
+
+        const responseStream = await ai.models.generateContentStream({
+          model: aiConfig.model,
+          contents: { parts },
+          config: {
+            systemInstruction: aiConfig.systemInstruction,
+            temperature: aiConfig.temperature,
+          },
+        });
+
+        for await (const chunk of responseStream) {
+          fullText += chunk.text;
+          const { cleanText, chartData } = extractChartData(fullText);
+          setMessages((prev) => 
+            prev.map(msg => msg.id === aiMessageId ? { ...msg, content: cleanText, chartData } : msg)
+          );
+        }
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error generating AI response:', error);
       setMessages((prev) => 
-        prev.map(msg => msg.id === aiMessageId ? { ...msg, content: '抱歉，与 AI 通信时发生错误。请检查您的 API 密钥并重试。' } : msg)
+        prev.map(msg => msg.id === aiMessageId ? { ...msg, content: `抱歉，发生错误：${error.message || '请检查您的 API 密钥并重试。'}` } : msg)
       );
     } finally {
       setIsLoading(false);
-    }
-  };
-
-  const generateDraft = async () => {
-    if (!draftPrompt.trim()) return;
-    setIsDrafting(true);
-    setAiDraft('');
-    
-    try {
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-      const parts: any[] = [];
-      
-      if (pdfBase64) {
-        parts.push({
-          inlineData: {
-            data: pdfBase64,
-            mimeType: 'application/pdf'
-          }
-        });
-      }
-      
-      parts.push({ text: `你是一个专业的论文写作助手。请根据以下要求，为我起草一段论文内容。请直接输出正文，不要包含多余的寒暄。\n\n写作要求：${draftPrompt}` });
-      
-      const responseStream = await ai.models.generateContentStream({
-        model: aiConfig.model,
-        contents: { parts },
-        config: {
-          systemInstruction: aiConfig.systemInstruction,
-          temperature: aiConfig.temperature,
-        },
-      });
-
-      let fullText = '';
-      for await (const chunk of responseStream) {
-        fullText += chunk.text;
-        setAiDraft(fullText);
-      }
-    } catch (error) {
-      console.error('Drafting error:', error);
-      setAiDraft('抱歉，生成草稿时发生错误，请重试。');
-    } finally {
-      setIsDrafting(false);
     }
   };
 
@@ -508,6 +622,7 @@ export default function App() {
       case 'summarize': prompt = '请用中文对这段内容进行简明扼要的总结：'; break;
       case 'translate': prompt = '请将这段内容准确地翻译成中文：'; break;
       case 'expand': prompt = '请根据这段内容，用中文进行详细的扩写和延伸：'; break;
+      case 'chart': prompt = '请根据这段内容的数据，生成一个图表 (返回 JSON 格式)：'; break;
     }
     sendPrompt(prompt, selectedText);
   };
@@ -522,89 +637,122 @@ export default function App() {
     });
   };
 
-  const ToolButton = ({ icon, label, active, onClick, disabled }: { icon: React.ReactNode, label: string, active: boolean, onClick: () => void, disabled?: boolean }) => (
+  const ToolButton = ({ icon, label, active, onClick, disabled, className }: { icon: React.ReactNode, label: string, active: boolean, onClick: () => void, disabled?: boolean, className?: string }) => (
     <button
       onClick={onClick}
       disabled={disabled}
-      className={`p-2.5 rounded-xl transition-all flex items-center justify-center ${disabled ? 'opacity-50 cursor-not-allowed text-muted' : active ? 'bg-primary text-white shadow-md' : 'text-muted hover:bg-secondary hover:text-content'}`}
+      className={cn(
+        "p-2.5 rounded-xl transition-all flex items-center justify-center relative overflow-hidden group",
+        disabled ? "opacity-50 cursor-not-allowed text-muted" : 
+        active ? "bg-primary text-white shadow-[0_0_15px_rgba(var(--color-primary),0.5)]" : "text-muted hover:bg-secondary hover:text-content",
+        className
+      )}
       title={label}
     >
-      {React.cloneElement(icon as React.ReactElement, { className: 'w-5 h-5' })}
+      {active && <div className="absolute inset-0 bg-gradient-to-tr from-white/0 via-white/20 to-white/0 translate-x-[-100%] animate-[shimmer_1.5s_infinite]" />}
+      {React.cloneElement(icon as React.ReactElement, { className: 'w-5 h-5 relative z-10' })}
     </button>
   );
 
   return (
-    <div data-theme={theme} className="flex h-screen w-full bg-background text-content font-sans overflow-hidden transition-colors duration-200">
+    <div data-theme={theme} className="flex h-screen w-full bg-background text-content font-sans overflow-hidden transition-colors duration-300 selection:bg-primary/30">
       {/* Left Panel: PDF Viewer */}
-      <div className="flex-1 flex flex-col border-r border-border-subtle bg-panel relative transition-colors duration-200">
-        <div className="h-14 border-b border-border-subtle flex items-center justify-between px-4 bg-panel z-10 transition-colors duration-200">
-          <h1 className="font-semibold text-lg flex items-center gap-2">
-            <MessageSquare className="w-5 h-5 text-primary" />
-            PDF AI Chat & Draft
-          </h1>
+      <div className="flex-1 flex flex-col border-r border-border-subtle bg-panel relative transition-colors duration-300">
+        <div className="h-16 border-b border-border-subtle flex items-center justify-between px-6 bg-panel/80 backdrop-blur-md z-10 transition-colors duration-300">
+          <div className="flex items-center gap-3">
+             <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-primary to-purple-600 flex items-center justify-center shadow-lg shadow-primary/20">
+                <Sparkles className="w-6 h-6 text-white" />
+             </div>
+             <div>
+                <h1 className="font-bold text-xl tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-content to-muted">PAA</h1>
+                <p className="text-[10px] uppercase tracking-widest text-primary font-bold">Personal Academic Assistant</p>
+             </div>
+          </div>
           
           {pdfFile && (
-            <div className="flex items-center gap-2 bg-secondary rounded-lg p-1">
-              <button onClick={() => setScale(s => Math.max(0.5, s - 0.1))} className="p-1.5 hover:bg-panel rounded-md text-muted hover:text-content transition-colors" title="Zoom Out">
+            <div className="flex items-center gap-2 bg-secondary/80 backdrop-blur-sm rounded-xl p-1 border border-border-subtle shadow-inner">
+              <button onClick={() => setScale(s => Math.max(0.5, s - 0.1))} className="p-1.5 hover:bg-panel rounded-lg text-muted hover:text-content transition-all hover:shadow-sm" title="Zoom Out">
                 <ZoomOut className="w-4 h-4" />
               </button>
-              <span className="text-xs font-medium w-12 text-center text-content">{Math.round(scale * 100)}%</span>
-              <button onClick={() => setScale(s => Math.min(3.0, s + 0.1))} className="p-1.5 hover:bg-panel rounded-md text-muted hover:text-content transition-colors" title="Zoom In">
+              <span className="text-xs font-bold w-12 text-center text-content font-mono">{Math.round(scale * 100)}%</span>
+              <button onClick={() => setScale(s => Math.min(3.0, s + 0.1))} className="p-1.5 hover:bg-panel rounded-lg text-muted hover:text-content transition-all hover:shadow-sm" title="Zoom In">
                 <ZoomIn className="w-4 h-4" />
               </button>
             </div>
           )}
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-3">
             {pdfFile && (
               <button 
                 onClick={handleExport} 
                 disabled={isExporting} 
-                className="bg-secondary hover:bg-secondary/80 text-content px-3 py-1.5 rounded-md text-sm font-medium transition-colors flex items-center gap-2 mr-2"
+                className="group relative overflow-hidden bg-secondary hover:bg-secondary/80 text-content px-4 py-2 rounded-xl text-sm font-bold transition-all flex items-center gap-2 border border-border-subtle hover:border-primary/50 hover:shadow-[0_0_15px_rgba(var(--color-primary),0.2)]"
               >
-                {isExporting ? <div className="w-4 h-4 border-2 border-content border-t-transparent rounded-full animate-spin"></div> : <Download className="w-4 h-4" />}
+                {isExporting ? <div className="w-4 h-4 border-2 border-content border-t-transparent rounded-full animate-spin"></div> : <Download className="w-4 h-4 group-hover:-translate-y-0.5 transition-transform" />}
                 导出 PDF
               </button>
             )}
-            <label className="cursor-pointer bg-primary text-white hover:bg-primary-hover px-3 py-1.5 rounded-md text-sm font-medium transition-colors flex items-center gap-2">
-              <Upload className="w-4 h-4" />
-              上传 PDF
-              <input type="file" accept="application/pdf" className="hidden" onChange={handleFileUpload} />
-            </label>
+            <button
+              onClick={() => setIsSettingsOpen(true)}
+              className="p-2.5 text-muted hover:text-primary hover:bg-primary/10 rounded-xl transition-all border border-transparent hover:border-primary/20"
+              title="配置"
+            >
+              <Settings className="w-5 h-5" />
+            </button>
           </div>
         </div>
 
         {pendingStampText && (
-          <div className="absolute top-16 left-1/2 -translate-x-1/2 z-30 bg-primary text-white px-4 py-2 rounded-full shadow-lg flex items-center gap-2 animate-pulse">
-            <MousePointer2 className="w-4 h-4" />
-            <span className="text-sm font-medium">在 PDF 任意位置点击即可插入文字</span>
-            <button onClick={() => setPendingStampText(null)} className="ml-2 hover:bg-white/20 rounded-full p-1">
-              <X className="w-3 h-3" />
+          <div className="absolute top-20 left-1/2 -translate-x-1/2 z-30 bg-gradient-to-r from-primary to-purple-600 text-white px-6 py-3 rounded-2xl shadow-[0_10px_40px_rgba(var(--color-primary),0.4)] flex items-center gap-3 animate-in slide-in-from-top-4 fade-in duration-300 border border-white/20 backdrop-blur-md">
+            <div className="w-8 h-8 rounded-full bg-white/20 flex items-center justify-center animate-pulse">
+               <MousePointer2 className="w-4 h-4" />
+            </div>
+            <span className="text-sm font-bold tracking-wide">在 PDF 任意位置点击即可插入文字</span>
+            <button onClick={() => setPendingStampText(null)} className="ml-2 hover:bg-white/20 rounded-full p-1.5 transition-colors">
+              <X className="w-4 h-4" />
             </button>
           </div>
         )}
 
-        <div className="flex-1 overflow-auto bg-background relative" ref={pdfContainerRef}>
+        <div className="flex-1 overflow-auto bg-background relative custom-scrollbar" ref={pdfContainerRef}>
           {!pdfFile ? (
             <div className="absolute inset-0 flex flex-col items-center justify-center text-muted">
-              <Upload className="w-12 h-12 mb-4 opacity-50" />
-              <p className="text-lg font-medium">未加载 PDF</p>
-              <p className="text-sm">上传 PDF 文件以开始阅读、写作和对话</p>
+              <div className="relative group cursor-pointer" onClick={() => document.getElementById('file-upload')?.click()}>
+                 <div className="absolute inset-0 bg-primary/20 rounded-full blur-3xl group-hover:bg-primary/30 transition-all duration-500"></div>
+                 <div className="w-32 h-32 rounded-3xl bg-panel border-2 border-dashed border-primary/50 flex items-center justify-center relative z-10 group-hover:scale-105 group-hover:border-primary transition-all duration-300 shadow-2xl">
+                    <Upload className="w-12 h-12 text-primary group-hover:-translate-y-2 transition-transform duration-300" />
+                 </div>
+              </div>
+              <h2 className="text-2xl font-bold mt-8 mb-2 bg-clip-text text-transparent bg-gradient-to-r from-content to-muted">开启您的学术之旅</h2>
+              <p className="text-sm mb-8 max-w-md text-center">上传现有的 PDF 论文进行阅读和分析，或者创建一个空白草稿开始全新的创作。</p>
+              
+              <div className="flex gap-4">
+                 <label className="cursor-pointer bg-primary text-white hover:bg-primary-hover px-6 py-3 rounded-xl text-sm font-bold transition-all flex items-center gap-2 shadow-[0_0_20px_rgba(var(--color-primary),0.4)] hover:shadow-[0_0_30px_rgba(var(--color-primary),0.6)] hover:-translate-y-0.5">
+                   <Upload className="w-5 h-5" />
+                   导入 PDF 论文
+                   <input id="file-upload" type="file" accept="application/pdf" className="hidden" onChange={handleFileUpload} />
+                 </label>
+                 <button onClick={createBlankPdf} className="bg-panel border border-border-subtle hover:border-primary hover:text-primary text-content px-6 py-3 rounded-xl text-sm font-bold transition-all flex items-center gap-2 shadow-lg hover:-translate-y-0.5">
+                   <FilePlus2 className="w-5 h-5" />
+                   创作新论文
+                 </button>
+              </div>
             </div>
           ) : (
-            <div className="flex justify-center p-4 pb-32">
+            <div className="flex justify-center p-8 pb-40">
               <Document
                 file={pdfFile}
                 onLoadSuccess={({ numPages }) => setNumPages(numPages)}
-                className="flex flex-col gap-4"
+                className="flex flex-col gap-8"
                 loading={
-                  <div className="flex items-center justify-center p-12 text-muted">
-                    加载 PDF 中...
+                  <div className="flex flex-col items-center justify-center p-20 text-primary gap-4">
+                    <div className="w-12 h-12 border-4 border-primary/30 border-t-primary rounded-full animate-spin"></div>
+                    <span className="font-bold tracking-widest uppercase text-sm">Loading Document...</span>
                   </div>
                 }
               >
                 {Array.from(new Array(numPages), (el, index) => (
-                  <div key={`page_${index + 1}`} className="relative bg-panel shadow-sm rounded-sm overflow-hidden" style={{ width: `${800 * scale}px` }}>
+                  <div key={`page_${index + 1}`} className="relative bg-white shadow-[0_0_40px_rgba(0,0,0,0.1)] rounded-sm overflow-hidden ring-1 ring-black/5 transition-transform duration-300 hover:shadow-[0_0_50px_rgba(0,0,0,0.15)]" style={{ width: `${800 * scale}px` }}>
                     <Page
                       pageNumber={index + 1}
                       renderTextLayer={true}
@@ -635,12 +783,12 @@ export default function App() {
           
           {/* PDF Toolbar */}
           {pdfFile && (
-            <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-panel border border-border-subtle shadow-2xl rounded-2xl flex flex-col overflow-hidden z-20 transition-colors duration-200">
+            <div className="fixed bottom-8 left-[calc(50%-200px)] -translate-x-1/2 bg-panel/90 backdrop-blur-xl border border-white/10 shadow-[0_20px_50px_rgba(0,0,0,0.3)] rounded-2xl flex flex-col overflow-hidden z-20 transition-all duration-300 hover:shadow-[0_20px_60px_rgba(var(--color-primary),0.2)]">
               {/* Tool Options */}
               {pdfTool !== 'cursor' && pdfTool !== 'eraser' && (
-                <div className="flex items-center justify-between gap-6 px-4 py-3 bg-secondary/50 border-b border-border-subtle">
-                  <div className="flex items-center gap-3">
-                    <span className="text-xs font-medium text-muted uppercase tracking-wider">大小</span>
+                <div className="flex items-center justify-between gap-6 px-5 py-3 bg-black/20 border-b border-white/5 animate-in slide-in-from-bottom-2 duration-200">
+                  <div className="flex items-center gap-4">
+                    <span className="text-[10px] font-bold text-muted uppercase tracking-widest">Size</span>
                     <input
                       type="range"
                       min={pdfTool === 'highlight' ? 10 : 1}
@@ -652,36 +800,38 @@ export default function App() {
                         else if (pdfTool === 'highlight') setHighlightSize(val);
                         else setTextSize(val);
                       }}
-                      className="w-24 accent-primary"
+                      className="w-24 accent-primary h-1.5 bg-secondary rounded-full appearance-none [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:bg-primary [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:shadow-[0_0_10px_rgba(var(--color-primary),0.8)]"
                     />
                   </div>
-                  <div className="flex items-center gap-3">
-                    <span className="text-xs font-medium text-muted uppercase tracking-wider">颜色</span>
-                    <input
-                      type="color"
-                      value={pdfTool === 'draw' ? drawColor : pdfTool === 'highlight' ? highlightColor : textColor}
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        if (pdfTool === 'draw') setDrawColor(val);
-                        else if (pdfTool === 'highlight') setHighlightColor(val);
-                        else setTextColor(val);
-                      }}
-                      className="w-6 h-6 rounded cursor-pointer border-0 p-0"
-                    />
+                  <div className="flex items-center gap-4">
+                    <span className="text-[10px] font-bold text-muted uppercase tracking-widest">Color</span>
+                    <div className="relative w-7 h-7 rounded-full overflow-hidden ring-2 ring-white/20 shadow-inner">
+                       <input
+                         type="color"
+                         value={pdfTool === 'draw' ? drawColor : pdfTool === 'highlight' ? highlightColor : textColor}
+                         onChange={(e) => {
+                           const val = e.target.value;
+                           if (pdfTool === 'draw') setDrawColor(val);
+                           else if (pdfTool === 'highlight') setHighlightColor(val);
+                           else setTextColor(val);
+                         }}
+                         className="absolute -inset-2 w-12 h-12 cursor-pointer border-0 p-0"
+                       />
+                    </div>
                   </div>
                 </div>
               )}
 
               {/* Tools */}
-              <div className="flex items-center gap-1 p-2">
+              <div className="flex items-center gap-1.5 p-2.5">
                 <ToolButton icon={<MousePointer2 />} label="选择文本" active={pdfTool === 'cursor'} onClick={() => setPdfTool('cursor')} />
-                <div className="w-px h-6 bg-border-subtle mx-1"></div>
-                <ToolButton icon={<Highlighter />} label="高亮" active={pdfTool === 'highlight'} onClick={() => setPdfTool('highlight')} />
-                <ToolButton icon={<Pen />} label="画笔" active={pdfTool === 'draw'} onClick={() => setPdfTool('draw')} />
-                <ToolButton icon={<Type />} label="文本笔记" active={pdfTool === 'text'} onClick={() => setPdfTool('text')} />
-                <div className="w-px h-6 bg-border-subtle mx-1"></div>
-                <ToolButton icon={<Eraser />} label="橡皮擦" active={pdfTool === 'eraser'} onClick={() => setPdfTool('eraser')} />
-                <div className="w-px h-6 bg-border-subtle mx-1"></div>
+                <div className="w-px h-8 bg-gradient-to-b from-transparent via-border-subtle to-transparent mx-1"></div>
+                <ToolButton icon={<Highlighter />} label="高亮" active={pdfTool === 'highlight'} onClick={() => setPdfTool('highlight')} className="hover:text-yellow-400" />
+                <ToolButton icon={<Pen />} label="画笔" active={pdfTool === 'draw'} onClick={() => setPdfTool('draw')} className="hover:text-blue-400" />
+                <ToolButton icon={<Type />} label="文本笔记" active={pdfTool === 'text'} onClick={() => setPdfTool('text')} className="hover:text-green-400" />
+                <div className="w-px h-8 bg-gradient-to-b from-transparent via-border-subtle to-transparent mx-1"></div>
+                <ToolButton icon={<Eraser />} label="橡皮擦" active={pdfTool === 'eraser'} onClick={() => setPdfTool('eraser')} className="hover:text-red-400" />
+                <div className="w-px h-8 bg-gradient-to-b from-transparent via-border-subtle to-transparent mx-1"></div>
                 <ToolButton icon={<Undo2 />} label="撤销" active={false} onClick={handleUndo} disabled={globalHistory.length === 0} />
               </div>
             </div>
@@ -689,294 +839,247 @@ export default function App() {
         </div>
       </div>
 
-      {/* Right Panel: Chat & Notepad Interface */}
-      <div className="w-[400px] flex flex-col bg-panel shadow-[-4px_0_24px_rgba(0,0,0,0.02)] z-20 transition-colors duration-200">
-        <div className="h-14 border-b border-border-subtle flex items-center justify-between px-2">
-          <div className="flex items-center gap-1">
-            <button 
-              onClick={() => setActiveTab('chat')}
-              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2 ${activeTab === 'chat' ? 'bg-secondary text-content' : 'text-muted hover:text-content hover:bg-secondary/50'}`}
-            >
-              <Bot className="w-4 h-4" />
-              {aiConfig.model.includes('flash') ? 'Flash' : 'Pro'}
-            </button>
-            <button 
-              onClick={() => setActiveTab('write')}
-              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2 ${activeTab === 'write' ? 'bg-secondary text-content' : 'text-muted hover:text-content hover:bg-secondary/50'}`}
-            >
-              <FileText className="w-4 h-4" />
-              论文写作
-            </button>
+      {/* Right Panel: Chat Interface */}
+      <div className="w-[450px] flex flex-col bg-panel/95 backdrop-blur-2xl shadow-[-10px_0_30px_rgba(0,0,0,0.1)] z-20 transition-colors duration-300 border-l border-white/5">
+        <div className="h-16 border-b border-white/5 flex items-center justify-between px-6 bg-gradient-to-r from-transparent to-primary/5">
+          <div className="flex items-center gap-3">
+             <div className="w-8 h-8 rounded-lg bg-primary/20 flex items-center justify-center border border-primary/30">
+                <Bot className="w-4 h-4 text-primary" />
+             </div>
+             <div>
+                <h2 className="font-bold text-sm tracking-wide">{aiConfig.provider === 'gemini' ? 'Gemini AI' : 'Zhipu AI'}</h2>
+                <div className="flex items-center gap-1.5">
+                   <div className="w-1.5 h-1.5 rounded-full bg-green-500 shadow-[0_0_5px_#22c55e]"></div>
+                   <span className="text-[10px] text-muted uppercase tracking-wider">{mode === 'create' ? 'Writing Mode' : 'Reading Mode'}</span>
+                </div>
+             </div>
           </div>
-          <button
-            onClick={() => setIsSettingsOpen(true)}
-            className="p-2 text-muted hover:text-content hover:bg-secondary rounded-lg transition-colors"
-            title="AI Settings"
-          >
-            <Settings className="w-5 h-5" />
-          </button>
+          <div className="flex gap-2">
+             <span className="text-xs font-mono bg-secondary px-2 py-1 rounded-md text-muted border border-border-subtle">{aiConfig.model}</span>
+          </div>
         </div>
 
-        {activeTab === 'write' ? (
-          <div className="flex-1 flex flex-col p-4 overflow-y-auto">
-            <div className="mb-2 text-sm text-muted flex items-center gap-2">
-              <Pen className="w-4 h-4" />
-              论文草稿区
+        <div className="flex-1 overflow-y-auto p-6 space-y-6 custom-scrollbar relative">
+           {/* Background glow */}
+           <div className="absolute top-0 left-1/2 -translate-x-1/2 w-full h-64 bg-primary/5 blur-[100px] pointer-events-none"></div>
+           
+          {messages.length === 0 ? (
+            <div className="h-full flex flex-col items-center justify-center text-center text-muted space-y-6 animate-in fade-in duration-700">
+              <div className="relative">
+                 <div className="absolute inset-0 bg-primary/20 rounded-full blur-xl animate-pulse"></div>
+                 <div className="w-20 h-20 rounded-2xl bg-panel border border-white/10 flex items-center justify-center relative z-10 shadow-2xl">
+                    <Bot className="w-10 h-10 text-primary" />
+                 </div>
+              </div>
+              <div className="space-y-2">
+                 <h3 className="text-lg font-bold text-content">准备就绪</h3>
+                 <p className="text-sm px-8 max-w-xs leading-relaxed">
+                   {mode === 'create' ? '告诉我想写什么，或者让我帮您生成图表数据。' : '选中左侧文本进行分析，或者直接向我提问。'}
+                 </p>
+              </div>
             </div>
-            <textarea
-              value={notepadContent}
-              onChange={(e) => setNotepadContent(e.target.value)}
-              placeholder="在这里撰写您的论文或笔记..."
-              className="flex-1 w-full min-h-[300px] bg-secondary/50 border border-border-subtle rounded-xl p-4 text-content resize-none outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all"
-            />
-            
-            {/* AI Drafting Section */}
-            <div className="mt-4 border border-border-subtle rounded-xl bg-secondary/30 p-3 flex flex-col gap-2">
-               <div className="text-xs font-medium text-primary flex items-center gap-1"><Wand2 className="w-3 h-3"/> AI 辅助写作</div>
-               {aiDraft ? (
-                  <div className="bg-background border border-primary/20 rounded-lg p-3 text-sm relative">
-                     <div className="prose prose-sm max-w-none prose-zinc dark:prose-invert">
-                       <Markdown>{aiDraft}</Markdown>
-                     </div>
-                     {!isDrafting && (
-                       <div className="flex gap-2 mt-3 justify-end">
-                          <button onClick={() => { setNotepadContent(prev => prev + (prev ? '\n\n' : '') + aiDraft); setAiDraft(''); }} className="text-xs bg-primary text-white px-3 py-1.5 rounded-md flex items-center gap-1 hover:bg-primary-hover transition-colors"><Check className="w-3 h-3"/> 采纳并插入</button>
-                          <button onClick={() => setAiDraft('')} className="text-xs bg-secondary text-content px-3 py-1.5 rounded-md flex items-center gap-1 hover:bg-secondary/80 transition-colors"><X className="w-3 h-3"/> 丢弃</button>
-                       </div>
-                     )}
-                     {isDrafting && (
-                        <div className="flex items-center gap-1 mt-2 text-muted">
-                          <div className="w-1.5 h-1.5 bg-muted rounded-full animate-bounce [animation-delay:-0.3s]"></div>
-                          <div className="w-1.5 h-1.5 bg-muted rounded-full animate-bounce [animation-delay:-0.15s]"></div>
-                          <div className="w-1.5 h-1.5 bg-muted rounded-full animate-bounce"></div>
-                        </div>
-                     )}
+          ) : (
+            messages.map((msg) => (
+              <div key={msg.id} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'} animate-in slide-in-from-bottom-4 fade-in duration-300`}>
+                <div className={`flex items-start gap-3 max-w-[95%] ${msg.role === 'user' ? 'flex-row-reverse' : 'flex-row'}`}>
+                  <div className={`w-8 h-8 rounded-xl flex items-center justify-center shrink-0 shadow-lg ${msg.role === 'user' ? 'bg-gradient-to-br from-primary to-purple-600 text-white' : 'bg-panel border border-white/10 text-primary'}`}>
+                    {msg.role === 'user' ? <User className="w-4 h-4" /> : <Bot className="w-4 h-4" />}
                   </div>
-               ) : (
-                  <div className="flex gap-2">
-                     <input 
-                       value={draftPrompt} 
-                       onChange={e => setDraftPrompt(e.target.value)} 
-                       onKeyDown={(e) => { if (e.key === 'Enter') generateDraft(); }}
-                       placeholder="输入写作要求，例如：帮我写一段引言..." 
-                       className="flex-1 text-sm bg-background border border-border-subtle rounded-lg px-3 py-2 outline-none focus:border-primary text-content placeholder:text-muted" 
-                     />
-                     <button 
-                       onClick={generateDraft} 
-                       disabled={!draftPrompt.trim() || isDrafting} 
-                       className="bg-primary hover:bg-primary-hover text-white px-3 py-2 rounded-lg text-sm disabled:opacity-50 transition-colors"
-                     >
-                       <Send className="w-4 h-4"/>
-                     </button>
-                  </div>
-               )}
-            </div>
-          </div>
-        ) : (
-          <>
-            <div className="flex-1 overflow-y-auto p-4 space-y-6">
-              {messages.length === 0 ? (
-                <div className="h-full flex flex-col items-center justify-center text-center text-muted space-y-3">
-                  <Bot className="w-10 h-10 opacity-50" />
-                  <p className="text-sm px-6">
-                    我可以帮您阅读和写作。选中左侧文本进行分析，或者直接向我提问！
-                  </p>
-                </div>
-              ) : (
-                messages.map((msg) => (
-                  <div key={msg.id} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
-                    <div className={`flex items-start gap-2 max-w-[95%] ${msg.role === 'user' ? 'flex-row-reverse' : 'flex-row'}`}>
-                      <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${msg.role === 'user' ? 'bg-primary/10 text-primary' : 'bg-secondary text-muted'}`}>
-                        {msg.role === 'user' ? <User className="w-4 h-4" /> : <Bot className="w-4 h-4" />}
+                  <div className={`flex flex-col gap-2 ${msg.role === 'user' ? 'items-end' : 'items-start'} w-full`}>
+                    {msg.context && (
+                      <div className="bg-panel border border-primary/20 text-content text-xs p-3 rounded-xl max-w-full overflow-hidden text-ellipsis line-clamp-3 shadow-inner relative group">
+                        <div className="absolute left-0 top-0 bottom-0 w-1 bg-primary rounded-l-xl"></div>
+                        <span className="font-bold block mb-1 text-primary uppercase tracking-wider text-[10px]">Reference</span>
+                        <span className="italic opacity-80">"{msg.context}"</span>
                       </div>
-                      <div className={`flex flex-col gap-1 ${msg.role === 'user' ? 'items-end' : 'items-start'} w-full`}>
-                        {msg.context && (
-                          <div className="bg-primary/5 border border-primary/20 text-content text-xs p-2 rounded-md max-w-full overflow-hidden text-ellipsis line-clamp-3">
-                            <span className="font-semibold block mb-1 text-primary">选中文本:</span>
-                            "{msg.context}"
-                          </div>
-                        )}
-                        <div className={`px-4 py-3 rounded-2xl text-sm w-full ${
-                          msg.role === 'user'
-                            ? 'bg-primary text-white rounded-tr-sm'
-                            : 'bg-secondary text-content rounded-tl-sm'
-                        }`}>
-                          {msg.role === 'ai' ? (
-                            <div className="prose prose-sm max-w-none prose-zinc dark:prose-invert">
-                              <Markdown>{msg.content}</Markdown>
-                            </div>
-                          ) : (
-                            msg.content
+                    )}
+                    <div className={`px-5 py-4 rounded-2xl text-sm w-full shadow-lg ${
+                      msg.role === 'user'
+                        ? 'bg-gradient-to-br from-primary to-purple-600 text-white rounded-tr-sm'
+                        : 'bg-panel border border-white/5 text-content rounded-tl-sm'
+                    }`}>
+                      {msg.role === 'ai' ? (
+                        <div className="prose prose-sm max-w-none prose-zinc dark:prose-invert prose-p:leading-relaxed prose-pre:bg-black/50 prose-pre:border prose-pre:border-white/10">
+                          <Markdown>{msg.content}</Markdown>
+                          {msg.chartData && (
+                            <DynamicChart data={msg.chartData.data} type={msg.chartData.chartType} />
                           )}
                         </div>
-                        {msg.role === 'ai' && msg.content && !isLoading && (
-                          <div className="flex items-center gap-2 mt-1 ml-1">
-                            <button 
-                              onClick={() => setPendingStampText(msg.content)}
-                              className="text-xs flex items-center gap-1 text-muted hover:text-primary transition-colors bg-background px-2 py-1 rounded-md border border-border-subtle hover:border-primary/30"
-                            >
-                              <MousePointer2 className="w-3 h-3" /> 印在 PDF 上
-                            </button>
-                            <button 
-                              onClick={() => {
-                                setNotepadContent(prev => prev + (prev ? '\n\n' : '') + msg.content);
-                                setActiveTab('write');
-                              }}
-                              className="text-xs flex items-center gap-1 text-muted hover:text-primary transition-colors bg-background px-2 py-1 rounded-md border border-border-subtle hover:border-primary/30"
-                            >
-                              <FileText className="w-3 h-3" /> 加入论文草稿
-                            </button>
-                          </div>
-                        )}
+                      ) : (
+                        msg.content
+                      )}
+                    </div>
+                    {msg.role === 'ai' && msg.content && !isLoading && (
+                      <div className="flex items-center gap-2 mt-1 ml-1">
+                        <button 
+                          onClick={() => setPendingStampText(msg.content)}
+                          className="text-[11px] font-bold uppercase tracking-wider flex items-center gap-1.5 text-muted hover:text-primary transition-all bg-panel px-3 py-1.5 rounded-lg border border-border-subtle hover:border-primary/50 hover:shadow-[0_0_10px_rgba(var(--color-primary),0.2)] group"
+                        >
+                          <MousePointer2 className="w-3 h-3 group-hover:-translate-y-0.5 transition-transform" /> 插入到 PDF
+                        </button>
                       </div>
-                    </div>
-                  </div>
-                ))
-              )}
-              {isLoading && (
-                <div className="flex items-start gap-2">
-                  <div className="w-8 h-8 rounded-full bg-secondary text-muted flex items-center justify-center shrink-0">
-                    <Bot className="w-4 h-4" />
-                  </div>
-                  <div className="bg-secondary text-content px-4 py-3 rounded-2xl rounded-tl-sm text-sm flex items-center gap-1">
-                    <div className="w-1.5 h-1.5 bg-muted rounded-full animate-bounce [animation-delay:-0.3s]"></div>
-                    <div className="w-1.5 h-1.5 bg-muted rounded-full animate-bounce [animation-delay:-0.15s]"></div>
-                    <div className="w-1.5 h-1.5 bg-muted rounded-full animate-bounce"></div>
+                    )}
                   </div>
                 </div>
-              )}
-              <div ref={chatEndRef} />
+              </div>
+            ))
+          )}
+          {isLoading && (
+            <div className="flex items-start gap-3 animate-in fade-in">
+              <div className="w-8 h-8 rounded-xl bg-panel border border-white/10 text-primary flex items-center justify-center shrink-0 shadow-lg">
+                <Bot className="w-4 h-4" />
+              </div>
+              <div className="bg-panel border border-white/5 text-content px-5 py-4 rounded-2xl rounded-tl-sm text-sm flex items-center gap-2 shadow-lg">
+                <div className="w-2 h-2 bg-primary rounded-full animate-bounce [animation-delay:-0.3s] shadow-[0_0_5px_rgba(var(--color-primary),0.8)]"></div>
+                <div className="w-2 h-2 bg-primary rounded-full animate-bounce [animation-delay:-0.15s] shadow-[0_0_5px_rgba(var(--color-primary),0.8)]"></div>
+                <div className="w-2 h-2 bg-primary rounded-full animate-bounce shadow-[0_0_5px_rgba(var(--color-primary),0.8)]"></div>
+              </div>
             </div>
+          )}
+          <div ref={chatEndRef} />
+        </div>
 
-            <div className="p-4 bg-panel border-t border-border-subtle transition-colors duration-200">
-              {selectedText && (
-                <div className="mb-3">
-                  <div className="flex items-start justify-between bg-primary/5 border border-primary/20 rounded-md p-2 mb-2">
-                    <div className="text-xs text-content line-clamp-2 pr-2">
-                      <span className="font-semibold text-primary">已选择: </span>
-                      "{selectedText}"
-                    </div>
-                    <button
-                      onClick={() => setSelectedText('')}
-                      className="text-muted hover:text-content shrink-0"
-                    >
-                      <X className="w-4 h-4" />
-                    </button>
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    <button onClick={() => handleQuickAction('explain')} className="text-xs flex items-center gap-1 bg-secondary hover:bg-primary/10 hover:text-primary text-content px-2.5 py-1.5 rounded-md transition-colors border border-border-subtle">
-                      <Wand2 className="w-3 h-3" /> 解释
-                    </button>
-                    <button onClick={() => handleQuickAction('summarize')} className="text-xs flex items-center gap-1 bg-secondary hover:bg-primary/10 hover:text-primary text-content px-2.5 py-1.5 rounded-md transition-colors border border-border-subtle">
-                      <AlignLeft className="w-3 h-3" /> 总结
-                    </button>
-                    <button onClick={() => handleQuickAction('translate')} className="text-xs flex items-center gap-1 bg-secondary hover:bg-primary/10 hover:text-primary text-content px-2.5 py-1.5 rounded-md transition-colors border border-border-subtle">
-                      <Languages className="w-3 h-3" /> 翻译
-                    </button>
-                    <button onClick={() => handleQuickAction('expand')} className="text-xs flex items-center gap-1 bg-secondary hover:bg-primary/10 hover:text-primary text-content px-2.5 py-1.5 rounded-md transition-colors border border-border-subtle">
-                      <Pen className="w-3 h-3" /> 扩写
-                    </button>
-                  </div>
+        <div className="p-5 bg-panel/80 backdrop-blur-xl border-t border-white/5 transition-colors duration-300 relative z-10">
+          {selectedText && (
+            <div className="mb-4 animate-in slide-in-from-bottom-2">
+              <div className="flex items-start justify-between bg-primary/10 border border-primary/30 rounded-xl p-3 mb-3 shadow-inner">
+                <div className="text-xs text-content line-clamp-2 pr-2">
+                  <span className="font-bold text-primary uppercase tracking-wider text-[10px] mr-2">Selected</span>
+                  <span className="opacity-80">"{selectedText}"</span>
                 </div>
-              )}
-              <div className="relative flex items-center">
-                <textarea
-                  ref={chatInputRef}
-                  value={input}
-                  onChange={(e) => setInput(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !e.shiftKey) {
-                      e.preventDefault();
-                      handleSendMessage();
-                    }
-                  }}
-                  placeholder="输入您的问题..."
-                  className="w-full bg-secondary border-transparent focus:bg-panel focus:border-primary focus:ring-2 focus:ring-primary/20 rounded-xl pl-4 pr-12 py-3 text-sm resize-none outline-none transition-all text-content placeholder:text-muted"
-                  rows={1}
-                  style={{ minHeight: '44px', maxHeight: '120px' }}
-                />
                 <button
-                  onClick={handleSendMessage}
-                  disabled={(!input.trim() && !selectedText) || isLoading}
-                  className="absolute right-2 p-1.5 bg-primary text-white rounded-lg hover:bg-primary-hover disabled:opacity-50 disabled:hover:bg-primary transition-colors"
+                  onClick={() => setSelectedText('')}
+                  className="text-muted hover:text-primary shrink-0 transition-colors bg-panel rounded-full p-1 border border-white/5"
                 >
-                  <Send className="w-4 h-4" />
+                  <X className="w-3 h-3" />
+                </button>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button onClick={() => handleQuickAction('explain')} className="text-[11px] font-bold flex items-center gap-1.5 bg-panel hover:bg-primary hover:text-white text-content px-3 py-2 rounded-lg transition-all border border-border-subtle hover:border-primary shadow-sm hover:shadow-[0_0_15px_rgba(var(--color-primary),0.4)]">
+                  <Wand2 className="w-3 h-3" /> 解释
+                </button>
+                <button onClick={() => handleQuickAction('summarize')} className="text-[11px] font-bold flex items-center gap-1.5 bg-panel hover:bg-primary hover:text-white text-content px-3 py-2 rounded-lg transition-all border border-border-subtle hover:border-primary shadow-sm hover:shadow-[0_0_15px_rgba(var(--color-primary),0.4)]">
+                  <AlignLeft className="w-3 h-3" /> 总结
+                </button>
+                <button onClick={() => handleQuickAction('translate')} className="text-[11px] font-bold flex items-center gap-1.5 bg-panel hover:bg-primary hover:text-white text-content px-3 py-2 rounded-lg transition-all border border-border-subtle hover:border-primary shadow-sm hover:shadow-[0_0_15px_rgba(var(--color-primary),0.4)]">
+                  <Languages className="w-3 h-3" /> 翻译
+                </button>
+                <button onClick={() => handleQuickAction('expand')} className="text-[11px] font-bold flex items-center gap-1.5 bg-panel hover:bg-primary hover:text-white text-content px-3 py-2 rounded-lg transition-all border border-border-subtle hover:border-primary shadow-sm hover:shadow-[0_0_15px_rgba(var(--color-primary),0.4)]">
+                  <Pen className="w-3 h-3" /> 扩写
+                </button>
+                <button onClick={() => handleQuickAction('chart')} className="text-[11px] font-bold flex items-center gap-1.5 bg-panel hover:bg-primary hover:text-white text-content px-3 py-2 rounded-lg transition-all border border-border-subtle hover:border-primary shadow-sm hover:shadow-[0_0_15px_rgba(var(--color-primary),0.4)]">
+                  <BarChart3 className="w-3 h-3" /> 生成图表
                 </button>
               </div>
             </div>
-          </>
-        )}
+          )}
+          <div className="relative flex items-end group">
+            <textarea
+              ref={chatInputRef}
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  handleSendMessage();
+                }
+              }}
+              placeholder="输入指令，或让 AI 帮您生成图表..."
+              className="w-full bg-secondary/50 border border-border-subtle focus:bg-panel focus:border-primary focus:ring-4 focus:ring-primary/10 rounded-2xl pl-5 pr-14 py-4 text-sm resize-none outline-none transition-all text-content placeholder:text-muted shadow-inner"
+              rows={1}
+              style={{ minHeight: '56px', maxHeight: '150px' }}
+            />
+            <button
+              onClick={handleSendMessage}
+              disabled={(!input.trim() && !selectedText) || isLoading}
+              className="absolute right-2 bottom-2 p-2.5 bg-gradient-to-br from-primary to-purple-600 text-white rounded-xl hover:shadow-[0_0_20px_rgba(var(--color-primary),0.6)] disabled:opacity-50 disabled:hover:shadow-none transition-all group-focus-within:scale-105"
+            >
+              <Send className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
       </div>
 
       {/* Settings Modal */}
       {isSettingsOpen && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-panel text-content rounded-xl shadow-xl w-full max-w-md overflow-hidden border border-border-subtle">
-            <div className="flex items-center justify-between p-4 border-b border-border-subtle">
-              <h3 className="font-semibold text-lg">配置</h3>
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 animate-in fade-in duration-200">
+          <div className="bg-panel text-content rounded-3xl shadow-[0_0_50px_rgba(0,0,0,0.5)] w-full max-w-lg overflow-hidden border border-white/10 animate-in zoom-in-95 duration-200">
+            <div className="flex items-center justify-between p-6 border-b border-white/5 bg-gradient-to-r from-transparent to-primary/5">
+              <h3 className="font-bold text-xl flex items-center gap-2"><Settings className="w-5 h-5 text-primary"/> 系统配置</h3>
               <button
                 onClick={() => setIsSettingsOpen(false)}
-                className="text-muted hover:text-content"
+                className="text-muted hover:text-white bg-secondary p-2 rounded-full transition-colors"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
-            <div className="p-4 space-y-5">
+            <div className="p-6 space-y-6">
               <div>
-                <label className="block text-sm font-medium mb-2">UI 主题</label>
-                <div className="flex gap-2">
-                  {(['light', 'dark', 'sepia'] as const).map((t) => (
+                <label className="block text-xs font-bold uppercase tracking-widest text-muted mb-3">UI Theme</label>
+                <div className="flex gap-3">
+                  {(['dark', 'light', 'sepia'] as const).map((t) => (
                     <button
                       key={t}
                       onClick={() => setTheme(t)}
-                      className={`px-4 py-2 rounded-md text-sm capitalize border transition-colors ${theme === t ? 'border-primary bg-primary/10 text-primary font-medium' : 'border-border-subtle text-muted hover:bg-secondary'}`}
+                      className={`flex-1 py-3 rounded-xl text-sm font-bold capitalize border transition-all ${theme === t ? 'border-primary bg-primary/10 text-primary shadow-[0_0_15px_rgba(var(--color-primary),0.2)]' : 'border-border-subtle text-muted hover:bg-secondary hover:border-white/20'}`}
                     >
                       {t}
                     </button>
                   ))}
                 </div>
               </div>
-              <div className="h-px w-full bg-border-subtle"></div>
-              <div>
-                <label className="block text-sm font-medium mb-1">AI 模型</label>
-                <select
-                  value={aiConfig.model}
-                  onChange={(e) => setAiConfig({ ...aiConfig, model: e.target.value })}
-                  className="w-full border border-border-subtle bg-secondary text-content rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
-                >
-                  <option value="gemini-3-flash-preview">Gemini 3 Flash</option>
-                  <option value="gemini-3.1-pro-preview">Gemini 3.1 Pro</option>
-                </select>
+              
+              <div className="h-px w-full bg-gradient-to-r from-transparent via-border-subtle to-transparent"></div>
+              
+              <div className="grid grid-cols-2 gap-4">
+                 <div>
+                   <label className="block text-xs font-bold uppercase tracking-widest text-muted mb-2">AI Provider</label>
+                   <select
+                     value={aiConfig.provider}
+                     onChange={(e) => setAiConfig({ ...aiConfig, provider: e.target.value as AIProvider, model: e.target.value === 'gemini' ? 'gemini-3.1-pro-preview' : 'glm-4' })}
+                     className="w-full border border-border-subtle bg-secondary text-content rounded-xl px-4 py-3 text-sm font-bold focus:outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all appearance-none"
+                   >
+                     <option value="gemini">Google Gemini</option>
+                     <option value="zhipu">智谱 AI (GLM)</option>
+                   </select>
+                 </div>
+                 <div>
+                   <label className="block text-xs font-bold uppercase tracking-widest text-muted mb-2">Model</label>
+                   <input
+                     type="text"
+                     value={aiConfig.model}
+                     onChange={(e) => setAiConfig({ ...aiConfig, model: e.target.value })}
+                     className="w-full border border-border-subtle bg-secondary text-content rounded-xl px-4 py-3 text-sm font-bold focus:outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all"
+                   />
+                 </div>
               </div>
+
               <div>
-                <label className="block text-sm font-medium mb-1">系统提示词 (System Instruction)</label>
+                <label className="block text-xs font-bold uppercase tracking-widest text-muted mb-2">API Key {aiConfig.provider === 'gemini' && '(Optional in AI Studio)'}</label>
+                <input
+                  type="password"
+                  value={aiConfig.apiKey}
+                  onChange={(e) => setAiConfig({ ...aiConfig, apiKey: e.target.value })}
+                  placeholder={`输入您的 ${aiConfig.provider === 'gemini' ? 'Gemini' : '智谱'} API Key`}
+                  className="w-full border border-border-subtle bg-secondary text-content rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all font-mono"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold uppercase tracking-widest text-muted mb-2">System Instruction</label>
                 <textarea
                   value={aiConfig.systemInstruction}
                   onChange={(e) => setAiConfig({ ...aiConfig, systemInstruction: e.target.value })}
-                  className="w-full border border-border-subtle bg-secondary text-content rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 h-24 resize-none"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium mb-1">
-                  随机性 (Temperature): {aiConfig.temperature}
-                </label>
-                <input
-                  type="range"
-                  min="0"
-                  max="2"
-                  step="0.1"
-                  value={aiConfig.temperature}
-                  onChange={(e) => setAiConfig({ ...aiConfig, temperature: parseFloat(e.target.value) })}
-                  className="w-full accent-primary"
+                  className="w-full border border-border-subtle bg-secondary text-content rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all h-24 resize-none custom-scrollbar"
                 />
               </div>
             </div>
-            <div className="p-4 border-t border-border-subtle bg-secondary/50 flex justify-end">
+            <div className="p-6 border-t border-white/5 bg-black/20 flex justify-end">
               <button
                 onClick={() => setIsSettingsOpen(false)}
-                className="bg-primary text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-primary-hover transition-colors"
+                className="bg-gradient-to-r from-primary to-purple-600 text-white px-8 py-3 rounded-xl text-sm font-bold hover:shadow-[0_0_20px_rgba(var(--color-primary),0.5)] transition-all hover:-translate-y-0.5 flex items-center gap-2"
               >
-                完成
+                保存配置 <ChevronRight className="w-4 h-4" />
               </button>
             </div>
           </div>
