@@ -69,9 +69,11 @@ const PageOverlay = forwardRef<PageOverlayRef, PageOverlayProps>(({ tool, drawCo
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [isDrawing, setIsDrawing] = useState(false);
   const [ctx, setCtx] = useState<CanvasRenderingContext2D | null>(null);
-  const [textPos, setTextPos] = useState<{x: number, y: number} | null>(null);
+  const [textPos, setTextPos] = useState<{x: number, y: number, width?: number, height?: number, isReplace?: boolean} | null>(null);
   const [textVal, setTextVal] = useState('');
   const [history, setHistory] = useState<string[]>([]);
+  const [replaceStart, setReplaceStart] = useState<{x: number, y: number} | null>(null);
+  const [replaceCurrent, setReplaceCurrent] = useState<{x: number, y: number} | null>(null);
 
   useImperativeHandle(ref, () => ({
     undo: () => {
@@ -176,15 +178,18 @@ const PageOverlay = forwardRef<PageOverlayRef, PageOverlayProps>(({ tool, drawCo
 
   const commitText = () => {
     if (textPos && textVal.trim() && ctx) {
-      saveState();
+      if (!textPos.isReplace) saveState();
       ctx.font = `${textSize * scale}px sans-serif`;
       ctx.fillStyle = textColor;
       ctx.globalCompositeOperation = 'source-over';
       
-      const maxWidth = (canvasRef.current?.width || 800) - textPos.x - 20; // 20px padding from right edge
+      const maxWidth = textPos.width || ((canvasRef.current?.width || 800) - textPos.x - 20);
       const lineHeight = textSize * scale * 1.5;
       
-      wrapText(ctx, textVal, textPos.x, textPos.y + (textSize * scale), maxWidth, lineHeight);
+      const paddingX = textPos.isReplace ? 2 : 8;
+      const paddingY = textPos.isReplace ? 2 : 8;
+      
+      wrapText(ctx, textVal, textPos.x + paddingX, textPos.y + (textSize * scale) + paddingY, maxWidth - paddingX * 2, lineHeight);
     }
     setTextPos(null);
     setTextVal('');
@@ -215,9 +220,18 @@ const PageOverlay = forwardRef<PageOverlayRef, PageOverlayProps>(({ tool, drawCo
       return;
     }
 
+    if (tool === 'replace') {
+      setReplaceStart({ x, y });
+      setReplaceCurrent({ x, y });
+      return;
+    }
+
     if (tool === 'text') {
       if (textPos) {
-        commitText();
+        setTimeout(() => {
+          setTextPos({ x, y });
+          setTextVal('');
+        }, 50);
       } else {
         setTextPos({ x, y });
         setTextVal('');
@@ -232,13 +246,21 @@ const PageOverlay = forwardRef<PageOverlayRef, PageOverlayProps>(({ tool, drawCo
   };
 
   const draw = (e: React.MouseEvent | React.TouchEvent) => {
-    if (!isDrawing || tool === 'cursor' || tool === 'text' || pendingStampText || !ctx) return;
-    if (e.cancelable) e.preventDefault();
     const canvas = canvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
     const clientX = 'touches' in e ? e.touches[0].clientX : (e as React.MouseEvent).clientX;
     const clientY = 'touches' in e ? e.touches[0].clientY : (e as React.MouseEvent).clientY;
+    const x = clientX - rect.left;
+    const y = clientY - rect.top;
+
+    if (tool === 'replace' && replaceStart) {
+      setReplaceCurrent({ x, y });
+      return;
+    }
+
+    if (!isDrawing || tool === 'cursor' || tool === 'text' || tool === 'replace' || pendingStampText || !ctx) return;
+    if (e.cancelable) e.preventDefault();
 
     if (tool === 'highlight') {
       ctx.strokeStyle = hexToRgba(highlightColor, 0.4);
@@ -259,6 +281,26 @@ const PageOverlay = forwardRef<PageOverlayRef, PageOverlayProps>(({ tool, drawCo
   };
 
   const stopDrawing = () => {
+    if (tool === 'replace' && replaceStart && replaceCurrent && ctx) {
+      const rx = Math.min(replaceStart.x, replaceCurrent.x);
+      const ry = Math.min(replaceStart.y, replaceCurrent.y);
+      const rw = Math.abs(replaceCurrent.x - replaceStart.x);
+      const rh = Math.abs(replaceCurrent.y - replaceStart.y);
+      
+      if (rw > 5 && rh > 5) {
+        saveState();
+        ctx.fillStyle = '#ffffff';
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.fillRect(rx, ry, rw, rh);
+        
+        setTextPos({ x: rx, y: ry, width: rw, height: rh, isReplace: true });
+        setTextVal('');
+      }
+      setReplaceStart(null);
+      setReplaceCurrent(null);
+      return;
+    }
+
     if (!isDrawing || !ctx) return;
     ctx.closePath();
     setIsDrawing(false);
@@ -275,23 +317,38 @@ const PageOverlay = forwardRef<PageOverlayRef, PageOverlayProps>(({ tool, drawCo
         onTouchStart={startDrawing}
         onTouchMove={draw}
         onTouchEnd={stopDrawing}
-        className={`absolute inset-0 touch-none ${pendingStampText ? 'cursor-crosshair' : tool === 'text' ? 'cursor-text' : ''}`}
+        className={`absolute inset-0 touch-none ${pendingStampText ? 'cursor-crosshair' : tool === 'text' ? 'cursor-text' : tool === 'replace' ? 'cursor-crosshair' : ''}`}
       />
-      {textPos && tool === 'text' && (
+      {replaceStart && replaceCurrent && tool === 'replace' && (
+        <div
+          className="absolute border-2 border-orange-500 bg-white/50 z-20 pointer-events-none"
+          style={{
+            left: Math.min(replaceStart.x, replaceCurrent.x),
+            top: Math.min(replaceStart.y, replaceCurrent.y),
+            width: Math.abs(replaceCurrent.x - replaceStart.x),
+            height: Math.abs(replaceCurrent.y - replaceStart.y),
+          }}
+        />
+      )}
+      {textPos && (tool === 'text' || tool === 'replace') && (
         <textarea
           autoFocus
           value={textVal}
           onChange={(e) => setTextVal(e.target.value)}
           onBlur={commitText}
-          placeholder="输入文字..."
-          className="absolute z-20 bg-white/90 border-2 border-primary shadow-[0_0_15px_rgba(var(--color-primary),0.5)] rounded-md p-2 outline-none resize-both text-zinc-900 backdrop-blur-sm"
+          placeholder={textPos.isReplace ? "输入替换文字..." : "输入文字..."}
+          className={`absolute z-20 outline-none resize-none text-zinc-900 ${textPos.isReplace ? 'bg-transparent overflow-hidden' : 'bg-white/90 border-2 border-primary shadow-[0_0_15px_rgba(var(--color-primary),0.5)] rounded-md p-2 backdrop-blur-sm'}`}
           style={{
             left: textPos.x,
             top: textPos.y,
+            width: textPos.width ? `${textPos.width}px` : 'auto',
+            height: textPos.height ? `${textPos.height}px` : 'auto',
+            minWidth: textPos.width ? undefined : '200px',
+            minHeight: textPos.height ? undefined : '60px',
             color: textColor,
             fontSize: `${textSize * scale}px`,
-            minWidth: '200px',
-            minHeight: '60px',
+            lineHeight: 1.5,
+            padding: textPos.isReplace ? '2px' : undefined,
           }}
         />
       )}
@@ -361,7 +418,7 @@ export default function App() {
   const [globalHistory, setGlobalHistory] = useState<number[]>([]);
   
   // PDF Tools State
-  const [pdfTool, setPdfTool] = useState<'cursor' | 'draw' | 'highlight' | 'text' | 'eraser'>('cursor');
+  const [pdfTool, setPdfTool] = useState<'cursor' | 'draw' | 'highlight' | 'text' | 'eraser' | 'replace'>('cursor');
   const [drawColor, setDrawColor] = useState('#00f0ff');
   const [drawSize, setDrawSize] = useState(3);
   const [highlightColor, setHighlightColor] = useState('#ff003c');
@@ -754,6 +811,18 @@ export default function App() {
           </div>
         )}
 
+        {pdfTool === 'replace' && !pendingStampText && (
+          <div className="absolute top-20 left-1/2 -translate-x-1/2 z-30 bg-panel text-content px-6 py-3 rounded-2xl shadow-[0_10px_40px_rgba(0,0,0,0.2)] flex items-center gap-3 animate-in slide-in-from-top-4 fade-in duration-300 border border-orange-500/30 backdrop-blur-md">
+            <div className="w-8 h-8 rounded-full bg-orange-500/20 flex items-center justify-center animate-pulse text-orange-500">
+               <Edit3 className="w-4 h-4" />
+            </div>
+            <span className="text-sm font-bold tracking-wide">框选需要修改的 PDF 原文，即可覆盖并重新输入</span>
+            <button onClick={() => setPdfTool('cursor')} className="ml-2 hover:bg-secondary rounded-full p-1.5 transition-colors text-muted hover:text-content">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        )}
+
         <div className="flex-1 overflow-auto bg-background relative custom-scrollbar" ref={pdfContainerRef}>
           {!pdfFile ? (
             <div className="absolute inset-0 flex flex-col items-center justify-center text-muted">
@@ -866,11 +935,12 @@ export default function App() {
               <div className="flex items-center gap-1.5 p-2.5">
                 <ToolButton icon={<MousePointer2 />} label="选择文本" active={pdfTool === 'cursor'} onClick={() => setPdfTool('cursor')} />
                 <div className="w-px h-8 bg-gradient-to-b from-transparent via-border-subtle to-transparent mx-1"></div>
+                <ToolButton icon={<Edit3 />} label="直接修改PDF (框选覆盖)" active={pdfTool === 'replace'} onClick={() => setPdfTool('replace')} className="hover:text-orange-400" />
+                <ToolButton icon={<Type />} label="插入文字" active={pdfTool === 'text'} onClick={() => setPdfTool('text')} className="hover:text-green-400" />
+                <div className="w-px h-8 bg-gradient-to-b from-transparent via-border-subtle to-transparent mx-1"></div>
                 <ToolButton icon={<Highlighter />} label="高亮" active={pdfTool === 'highlight'} onClick={() => setPdfTool('highlight')} className="hover:text-yellow-400" />
                 <ToolButton icon={<Pen />} label="画笔" active={pdfTool === 'draw'} onClick={() => setPdfTool('draw')} className="hover:text-blue-400" />
-                <ToolButton icon={<Type />} label="文本笔记" active={pdfTool === 'text'} onClick={() => setPdfTool('text')} className="hover:text-green-400" />
-                <div className="w-px h-8 bg-gradient-to-b from-transparent via-border-subtle to-transparent mx-1"></div>
-                <ToolButton icon={<Eraser />} label="橡皮擦" active={pdfTool === 'eraser'} onClick={() => setPdfTool('eraser')} className="hover:text-red-400" />
+                <ToolButton icon={<Eraser />} label="擦除批注" active={pdfTool === 'eraser'} onClick={() => setPdfTool('eraser')} className="hover:text-red-400" />
                 <div className="w-px h-8 bg-gradient-to-b from-transparent via-border-subtle to-transparent mx-1"></div>
                 <ToolButton icon={<Undo2 />} label="撤销" active={false} onClick={handleUndo} disabled={globalHistory.length === 0} />
               </div>
