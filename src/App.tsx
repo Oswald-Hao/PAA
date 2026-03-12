@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, forwardRef, useImperativeHandle } from 'react';
-import { Upload, Settings, MessageSquare, X, Send, Bot, User, MousePointer2, Highlighter, Pen, Eraser, ZoomIn, ZoomOut, Type, FileText, Wand2, Languages, AlignLeft, Check, Undo2, Download, Sparkles, FilePlus2, BarChart3, ChevronRight, Edit3, PanelRightClose, PanelRightOpen, Copy, Pipette } from 'lucide-react';
+import { Upload, Settings, MessageSquare, X, Send, Bot, User, MousePointer2, Highlighter, Pen, Eraser, ZoomIn, ZoomOut, Type, FileText, Wand2, Languages, AlignLeft, Check, Undo2, Download, Sparkles, FilePlus2, BarChart3, ChevronRight, Edit3, PanelRightClose, PanelRightOpen, Copy, Pipette, Hand } from 'lucide-react';
 import { GoogleGenAI } from '@google/genai';
 import { Document, Page, pdfjs } from 'react-pdf';
 import Markdown from 'react-markdown';
@@ -212,7 +212,7 @@ const PageOverlay = forwardRef<PageOverlayRef, PageOverlayProps>(({ tool, drawCo
   };
 
   const startDrawing = (e: React.MouseEvent | React.TouchEvent) => {
-    if ((tool === 'cursor' && !pendingStampText) || !ctx) return;
+    if ((tool === 'cursor' && !pendingStampText) || tool === 'pan' || !ctx) return;
     
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -275,13 +275,13 @@ const PageOverlay = forwardRef<PageOverlayRef, PageOverlayProps>(({ tool, drawCo
       return;
     }
 
-    if (!isDrawing || tool === 'cursor' || tool === 'text' || tool === 'replace' || pendingStampText || !ctx) return;
+    if (!isDrawing || tool === 'cursor' || tool === 'pan' || tool === 'text' || tool === 'replace' || pendingStampText || !ctx) return;
     if (e.cancelable) e.preventDefault();
 
     if (tool === 'highlight') {
       ctx.strokeStyle = hexToRgba(highlightColor, 0.4);
       ctx.lineWidth = highlightSize * scale;
-      ctx.globalCompositeOperation = 'source-over';
+      ctx.globalCompositeOperation = 'multiply';
     } else if (tool === 'draw') {
       ctx.strokeStyle = drawColor;
       ctx.lineWidth = drawSize * scale;
@@ -323,7 +323,7 @@ const PageOverlay = forwardRef<PageOverlayRef, PageOverlayProps>(({ tool, drawCo
   };
 
   return (
-    <div className="absolute inset-0 z-10" style={{ pointerEvents: (tool === 'cursor' && !pendingStampText) ? 'none' : 'auto' }}>
+    <div className="absolute inset-0 z-10" style={{ pointerEvents: ((tool === 'cursor' || tool === 'pan') && !pendingStampText) ? 'none' : 'auto' }}>
       <canvas
         ref={canvasRef}
         onMouseDown={startDrawing}
@@ -440,7 +440,7 @@ export default function App() {
   const [globalHistory, setGlobalHistory] = useState<number[]>([]);
   
   // PDF Tools State
-  const [pdfTool, setPdfTool] = useState<'cursor' | 'draw' | 'highlight' | 'text' | 'eraser' | 'replace'>('cursor');
+  const [pdfTool, setPdfTool] = useState<'cursor' | 'pan' | 'draw' | 'highlight' | 'text' | 'eraser' | 'replace'>('cursor');
   const [drawColor, setDrawColor] = useState('#00f0ff');
   const [drawSize, setDrawSize] = useState(3);
   const [highlightColor, setHighlightColor] = useState('#ff003c');
@@ -453,6 +453,10 @@ export default function App() {
   const [isChatOpen, setIsChatOpen] = useState(true);
   const [selectionRect, setSelectionRect] = useState<DOMRect | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
+  const [isSpacePanning, setIsSpacePanning] = useState(false);
+  const [isDraggingPan, setIsDraggingPan] = useState(false);
+  const [panStart, setPanStart] = useState({ x: 0, y: 0 });
+  const [scrollStart, setScrollStart] = useState({ left: 0, top: 0 });
   
   const [aiConfig, setAiConfig] = useState<AIConfig>({
     provider: 'gemini',
@@ -522,6 +526,64 @@ export default function App() {
 
     return () => observer.disconnect();
   }, [pdfFile, numPages, scale]);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.code === 'Space' && document.activeElement?.tagName !== 'INPUT' && document.activeElement?.tagName !== 'TEXTAREA') {
+        e.preventDefault();
+        setIsSpacePanning(true);
+      }
+    };
+    const handleKeyUp = (e: KeyboardEvent) => {
+      if (e.code === 'Space') {
+        setIsSpacePanning(false);
+        setIsDraggingPan(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+    };
+  }, []);
+
+  useEffect(() => {
+    const container = pdfContainerRef.current;
+    if (!container) return;
+    const handleWheel = (e: WheelEvent) => {
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        const delta = e.deltaY > 0 ? -0.1 : 0.1;
+        setScale(s => Math.min(Math.max(0.5, s + delta), 3.0));
+      }
+    };
+    container.addEventListener('wheel', handleWheel, { passive: false });
+    return () => container.removeEventListener('wheel', handleWheel);
+  }, []);
+
+  const handlePanStart = (e: React.MouseEvent) => {
+    if (isSpacePanning || pdfTool === 'pan') {
+      setIsDraggingPan(true);
+      setPanStart({ x: e.clientX, y: e.clientY });
+      if (pdfContainerRef.current) {
+        setScrollStart({ left: pdfContainerRef.current.scrollLeft, top: pdfContainerRef.current.scrollTop });
+      }
+    }
+  };
+
+  const handlePanMove = (e: React.MouseEvent) => {
+    if (isDraggingPan && pdfContainerRef.current) {
+      const dx = e.clientX - panStart.x;
+      const dy = e.clientY - panStart.y;
+      pdfContainerRef.current.scrollLeft = scrollStart.left - dx;
+      pdfContainerRef.current.scrollTop = scrollStart.top - dy;
+    }
+  };
+
+  const handlePanEnd = () => {
+    setIsDraggingPan(false);
+  };
 
   const createBlankPdf = async () => {
     const pdfDoc = await PDFDocument.create();
@@ -885,7 +947,14 @@ export default function App() {
           </div>
         )}
 
-        <div className="flex-1 overflow-auto bg-background relative custom-scrollbar" ref={pdfContainerRef}>
+        <div 
+          className={`flex-1 overflow-auto bg-background relative custom-scrollbar ${isSpacePanning || pdfTool === 'pan' ? (isDraggingPan ? 'cursor-grabbing' : 'cursor-grab') : ''}`} 
+          ref={pdfContainerRef}
+          onMouseDown={handlePanStart}
+          onMouseMove={handlePanMove}
+          onMouseUp={handlePanEnd}
+          onMouseLeave={handlePanEnd}
+        >
           {!pdfFile ? (
             <div className="absolute inset-0 flex flex-col items-center justify-center text-muted">
               <div className="relative group cursor-pointer" onClick={() => document.getElementById('file-upload')?.click()}>
@@ -972,12 +1041,12 @@ export default function App() {
           
           {/* PDF Toolbar */}
           {pdfFile && (
-            <div className="fixed bottom-8 left-[calc(50%-200px)] -translate-x-1/2 bg-panel/90 backdrop-blur-xl border border-white/10 shadow-[0_20px_50px_rgba(0,0,0,0.3)] rounded-2xl flex flex-col overflow-hidden z-20 transition-all duration-300 hover:shadow-[0_20px_60px_rgba(var(--color-primary),0.2)]">
-              {/* Tool Options */}
-              {pdfTool !== 'cursor' && (
-                <div className="flex items-center justify-between gap-6 px-5 py-3 bg-black/20 border-b border-white/5 animate-in slide-in-from-bottom-2 duration-200">
+            <div className="fixed left-6 top-1/2 -translate-y-1/2 bg-panel/90 backdrop-blur-xl border border-white/10 shadow-[0_20px_50px_rgba(0,0,0,0.3)] rounded-2xl flex flex-col overflow-visible z-20 transition-all duration-300 hover:shadow-[0_20px_60px_rgba(var(--color-primary),0.2)]">
+              {/* Tool Options Popout */}
+              {pdfTool !== 'cursor' && pdfTool !== 'pan' && (
+                <div className="absolute left-[calc(100%+12px)] top-0 bg-panel/95 backdrop-blur-xl border border-white/10 shadow-[0_10px_40px_rgba(0,0,0,0.3)] rounded-2xl flex flex-col gap-4 p-4 animate-in slide-in-from-left-2 duration-200 w-48">
                   {pdfTool !== 'replace' && (
-                    <div className="flex items-center gap-4">
+                    <div className="flex flex-col gap-2">
                       <span className="text-[10px] font-bold text-muted uppercase tracking-widest">Size</span>
                       <input
                         type="range"
@@ -991,14 +1060,14 @@ export default function App() {
                           else if (pdfTool === 'eraser') setEraserSize(val);
                           else setTextSize(val);
                         }}
-                        className="w-24 accent-primary h-1.5 bg-secondary rounded-full appearance-none [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:bg-primary [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:shadow-[0_0_10px_rgba(var(--color-primary),0.8)]"
+                        className="w-full accent-primary h-1.5 bg-secondary rounded-full appearance-none [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:bg-primary [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:shadow-[0_0_10px_rgba(var(--color-primary),0.8)]"
                       />
                     </div>
                   )}
                   {pdfTool !== 'eraser' && (
-                    <div className="flex items-center gap-4">
+                    <div className="flex flex-col gap-2">
                       <span className="text-[10px] font-bold text-muted uppercase tracking-widest">Color</span>
-                      <div className="relative w-7 h-7 rounded-full overflow-hidden ring-2 ring-white/20 shadow-inner">
+                      <div className="relative w-8 h-8 rounded-full overflow-hidden ring-2 ring-white/20 shadow-inner">
                          <input
                            type="color"
                            value={pdfTool === 'draw' ? drawColor : pdfTool === 'highlight' ? highlightColor : textColor}
@@ -1014,10 +1083,10 @@ export default function App() {
                     </div>
                   )}
                   {pdfTool === 'replace' && (
-                    <div className="flex items-center gap-4">
+                    <div className="flex flex-col gap-2">
                       <span className="text-[10px] font-bold text-muted uppercase tracking-widest">Bg Color</span>
                       <div className="flex items-center gap-2">
-                        <div className="relative w-7 h-7 rounded-full overflow-hidden ring-2 ring-white/20 shadow-inner">
+                        <div className="relative w-8 h-8 rounded-full overflow-hidden ring-2 ring-white/20 shadow-inner">
                            <input
                              type="color"
                              value={replaceBgColor}
@@ -1036,7 +1105,7 @@ export default function App() {
                                 // User canceled
                               }
                             }}
-                            className="p-1.5 bg-secondary hover:bg-primary/20 text-muted hover:text-primary rounded-lg transition-colors"
+                            className="p-2 bg-secondary hover:bg-primary/20 text-muted hover:text-primary rounded-lg transition-colors"
                             title="吸取 PDF 背景色"
                           >
                             <Pipette className="w-4 h-4" />
@@ -1049,16 +1118,17 @@ export default function App() {
               )}
 
               {/* Tools */}
-              <div className="flex items-center gap-1.5 p-2.5">
+              <div className="flex flex-col items-center gap-1.5 p-2.5">
                 <ToolButton icon={<MousePointer2 />} label="选择文本" active={pdfTool === 'cursor'} onClick={() => setPdfTool('cursor')} />
-                <div className="w-px h-8 bg-gradient-to-b from-transparent via-border-subtle to-transparent mx-1"></div>
+                <ToolButton icon={<Hand />} label="拖拽平移 (Space)" active={pdfTool === 'pan' || isSpacePanning} onClick={() => setPdfTool('pan')} />
+                <div className="h-px w-8 bg-gradient-to-r from-transparent via-border-subtle to-transparent my-1"></div>
                 <ToolButton icon={<Edit3 />} label="直接修改PDF (框选覆盖)" active={pdfTool === 'replace'} onClick={() => setPdfTool('replace')} className="hover:text-orange-400" />
                 <ToolButton icon={<Type />} label="插入文字" active={pdfTool === 'text'} onClick={() => setPdfTool('text')} className="hover:text-green-400" />
-                <div className="w-px h-8 bg-gradient-to-b from-transparent via-border-subtle to-transparent mx-1"></div>
+                <div className="h-px w-8 bg-gradient-to-r from-transparent via-border-subtle to-transparent my-1"></div>
                 <ToolButton icon={<Highlighter />} label="高亮" active={pdfTool === 'highlight'} onClick={() => setPdfTool('highlight')} className="hover:text-yellow-400" />
                 <ToolButton icon={<Pen />} label="画笔" active={pdfTool === 'draw'} onClick={() => setPdfTool('draw')} className="hover:text-blue-400" />
                 <ToolButton icon={<Eraser />} label="擦除批注" active={pdfTool === 'eraser'} onClick={() => setPdfTool('eraser')} className="hover:text-red-400" />
-                <div className="w-px h-8 bg-gradient-to-b from-transparent via-border-subtle to-transparent mx-1"></div>
+                <div className="h-px w-8 bg-gradient-to-r from-transparent via-border-subtle to-transparent my-1"></div>
                 <ToolButton icon={<Undo2 />} label="撤销" active={false} onClick={handleUndo} disabled={globalHistory.length === 0} />
               </div>
             </div>
