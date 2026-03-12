@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, forwardRef, useImperativeHandle } from 'react';
-import { Upload, Settings, MessageSquare, X, Send, Bot, User, MousePointer2, Highlighter, Pen, Eraser, ZoomIn, ZoomOut, Type, FileText, Wand2, Languages, AlignLeft, Check, Undo2, Download, Sparkles, FilePlus2, BarChart3, ChevronRight, Edit3, PanelRightClose, PanelRightOpen, Copy } from 'lucide-react';
+import { Upload, Settings, MessageSquare, X, Send, Bot, User, MousePointer2, Highlighter, Pen, Eraser, ZoomIn, ZoomOut, Type, FileText, Wand2, Languages, AlignLeft, Check, Undo2, Download, Sparkles, FilePlus2, BarChart3, ChevronRight, Edit3, PanelRightClose, PanelRightOpen, Copy, Pipette } from 'lucide-react';
 import { GoogleGenAI } from '@google/genai';
 import { Document, Page, pdfjs } from 'react-pdf';
 import Markdown from 'react-markdown';
@@ -44,6 +44,7 @@ interface PageOverlayProps {
   drawSize: number;
   highlightColor: string;
   highlightSize: number;
+  eraserSize: number;
   textColor: string;
   textSize: number;
   replaceBgColor: string;
@@ -66,7 +67,7 @@ const hexToRgba = (hex: string, alpha: number) => {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 };
 
-const PageOverlay = forwardRef<PageOverlayRef, PageOverlayProps>(({ tool, drawColor, drawSize, highlightColor, highlightSize, textColor, textSize, replaceBgColor, scale, pendingStampText, onStamp, onModified }, ref) => {
+const PageOverlay = forwardRef<PageOverlayRef, PageOverlayProps>(({ tool, drawColor, drawSize, highlightColor, highlightSize, eraserSize, textColor, textSize, replaceBgColor, scale, pendingStampText, onStamp, onModified }, ref) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [isDrawing, setIsDrawing] = useState(false);
   const [ctx, setCtx] = useState<CanvasRenderingContext2D | null>(null);
@@ -75,29 +76,32 @@ const PageOverlay = forwardRef<PageOverlayRef, PageOverlayProps>(({ tool, drawCo
   const [history, setHistory] = useState<string[]>([]);
   const [replaceStart, setReplaceStart] = useState<{x: number, y: number} | null>(null);
   const [replaceCurrent, setReplaceCurrent] = useState<{x: number, y: number} | null>(null);
+  const isCanceling = useRef(false);
+
+  const doUndo = () => {
+    setHistory(prev => {
+      if (prev.length === 0) return prev;
+      const newHistory = [...prev];
+      const lastState = newHistory.pop();
+      
+      const canvas = canvasRef.current;
+      const context = canvas?.getContext('2d');
+      if (canvas && context) {
+        context.clearRect(0, 0, canvas.width, canvas.height);
+        if (newHistory.length > 0) {
+          const img = new Image();
+          img.src = newHistory[newHistory.length - 1];
+          img.onload = () => {
+            context.drawImage(img, 0, 0);
+          };
+        }
+      }
+      return newHistory;
+    });
+  };
 
   useImperativeHandle(ref, () => ({
-    undo: () => {
-      setHistory(prev => {
-        if (prev.length === 0) return prev;
-        const newHistory = [...prev];
-        const lastState = newHistory.pop();
-        
-        const canvas = canvasRef.current;
-        const context = canvas?.getContext('2d');
-        if (canvas && context) {
-          context.clearRect(0, 0, canvas.width, canvas.height);
-          if (newHistory.length > 0) {
-            const img = new Image();
-            img.src = newHistory[newHistory.length - 1];
-            img.onload = () => {
-              context.drawImage(img, 0, 0);
-            };
-          }
-        }
-        return newHistory;
-      });
-    },
+    undo: doUndo,
     getCanvas: () => canvasRef.current,
     getHistoryLength: () => history.length
   }), [history]);
@@ -178,6 +182,7 @@ const PageOverlay = forwardRef<PageOverlayRef, PageOverlayProps>(({ tool, drawCo
   };
 
   const commitText = () => {
+    if (isCanceling.current) return;
     if (textPos && textVal.trim() && ctx) {
       if (!textPos.isReplace) saveState();
       ctx.font = `${textSize * scale}px sans-serif`;
@@ -194,6 +199,16 @@ const PageOverlay = forwardRef<PageOverlayRef, PageOverlayProps>(({ tool, drawCo
     }
     setTextPos(null);
     setTextVal('');
+  };
+
+  const cancelText = () => {
+    isCanceling.current = true;
+    if (textPos?.isReplace) {
+      doUndo();
+    }
+    setTextPos(null);
+    setTextVal('');
+    setTimeout(() => { isCanceling.current = false; }, 100);
   };
 
   const startDrawing = (e: React.MouseEvent | React.TouchEvent) => {
@@ -273,7 +288,7 @@ const PageOverlay = forwardRef<PageOverlayRef, PageOverlayProps>(({ tool, drawCo
       ctx.globalCompositeOperation = 'source-over';
     } else if (tool === 'eraser') {
       ctx.globalCompositeOperation = 'destination-out';
-      ctx.lineWidth = 30 * scale;
+      ctx.lineWidth = eraserSize * scale;
       ctx.strokeStyle = 'rgba(0,0,0,1)';
     }
 
@@ -337,7 +352,13 @@ const PageOverlay = forwardRef<PageOverlayRef, PageOverlayProps>(({ tool, drawCo
           value={textVal}
           onChange={(e) => setTextVal(e.target.value)}
           onBlur={commitText}
-          placeholder={textPos.isReplace ? "输入替换文字..." : "输入文字..."}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') {
+              e.preventDefault();
+              cancelText();
+            }
+          }}
+          placeholder={textPos.isReplace ? "输入替换文字 (Esc 取消)..." : "输入文字 (Esc 取消)..."}
           className={`absolute z-20 outline-none resize-none text-zinc-900 ${textPos.isReplace ? 'bg-transparent overflow-hidden' : 'bg-white/90 border-2 border-primary shadow-[0_0_15px_rgba(var(--color-primary),0.5)] rounded-md p-2 backdrop-blur-sm'}`}
           style={{
             left: textPos.x,
@@ -424,12 +445,14 @@ export default function App() {
   const [drawSize, setDrawSize] = useState(3);
   const [highlightColor, setHighlightColor] = useState('#ff003c');
   const [highlightSize, setHighlightSize] = useState(24);
+  const [eraserSize, setEraserSize] = useState(30);
   const [textColor, setTextColor] = useState('#000000');
   const [textSize, setTextSize] = useState(16);
   const [replaceBgColor, setReplaceBgColor] = useState('#ffffff');
   
   const [isChatOpen, setIsChatOpen] = useState(true);
   const [selectionRect, setSelectionRect] = useState<DOMRect | null>(null);
+  const [currentPage, setCurrentPage] = useState(1);
   
   const [aiConfig, setAiConfig] = useState<AIConfig>({
     provider: 'gemini',
@@ -478,6 +501,27 @@ export default function App() {
     document.addEventListener('selectionchange', handleSelectionChange);
     return () => document.removeEventListener('selectionchange', handleSelectionChange);
   }, []);
+
+  useEffect(() => {
+    if (!pdfFile || numPages === 0) return;
+    
+    const observer = new IntersectionObserver((entries) => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting) {
+          const pageNum = parseInt(entry.target.getAttribute('data-page-number') || '1', 10);
+          setCurrentPage(pageNum);
+        }
+      });
+    }, {
+      root: pdfContainerRef.current,
+      threshold: 0.5
+    });
+
+    const pageElements = document.querySelectorAll('.pdf-page-container');
+    pageElements.forEach(el => observer.observe(el));
+
+    return () => observer.disconnect();
+  }, [pdfFile, numPages, scale]);
 
   const createBlankPdf = async () => {
     const pdfDoc = await PDFDocument.create();
@@ -879,7 +923,12 @@ export default function App() {
                 }
               >
                 {Array.from(new Array(numPages), (el, index) => (
-                  <div key={`page_${index + 1}`} className="relative bg-white shadow-[0_0_40px_rgba(0,0,0,0.1)] rounded-sm overflow-hidden ring-1 ring-black/5 transition-transform duration-300 hover:shadow-[0_0_50px_rgba(0,0,0,0.15)]" style={{ width: `${800 * scale}px` }}>
+                  <div 
+                    key={`page_${index + 1}`} 
+                    data-page-number={index + 1}
+                    className="pdf-page-container relative bg-white shadow-[0_0_40px_rgba(0,0,0,0.1)] rounded-sm overflow-hidden ring-1 ring-black/5 transition-transform duration-300 hover:shadow-[0_0_50px_rgba(0,0,0,0.15)]" 
+                    style={{ width: `${800 * scale}px` }}
+                  >
                     <Page
                       pageNumber={index + 1}
                       renderTextLayer={true}
@@ -895,6 +944,7 @@ export default function App() {
                       drawSize={drawSize}
                       highlightColor={highlightColor}
                       highlightSize={highlightSize}
+                      eraserSize={eraserSize}
                       textColor={textColor}
                       textSize={textSize}
                       replaceBgColor={replaceBgColor}
@@ -909,56 +959,89 @@ export default function App() {
             </div>
           )}
           
+          {/* Floating Page Indicator */}
+          {pdfFile && numPages > 0 && (
+            <div 
+              className="fixed top-24 left-[calc(50%-200px)] -translate-x-1/2 z-20 bg-panel/80 backdrop-blur-md border border-white/10 shadow-[0_5px_20px_rgba(0,0,0,0.1)] px-4 py-1.5 rounded-full text-xs font-bold text-muted flex items-center gap-2 cursor-pointer hover:bg-panel hover:text-content transition-all" 
+              onClick={() => pdfContainerRef.current?.scrollTo({ top: 0, behavior: 'smooth' })}
+              title="回到顶部"
+            >
+              <span>{currentPage} / {numPages}</span>
+            </div>
+          )}
+          
           {/* PDF Toolbar */}
           {pdfFile && (
             <div className="fixed bottom-8 left-[calc(50%-200px)] -translate-x-1/2 bg-panel/90 backdrop-blur-xl border border-white/10 shadow-[0_20px_50px_rgba(0,0,0,0.3)] rounded-2xl flex flex-col overflow-hidden z-20 transition-all duration-300 hover:shadow-[0_20px_60px_rgba(var(--color-primary),0.2)]">
               {/* Tool Options */}
-              {pdfTool !== 'cursor' && pdfTool !== 'eraser' && (
+              {pdfTool !== 'cursor' && (
                 <div className="flex items-center justify-between gap-6 px-5 py-3 bg-black/20 border-b border-white/5 animate-in slide-in-from-bottom-2 duration-200">
                   {pdfTool !== 'replace' && (
                     <div className="flex items-center gap-4">
                       <span className="text-[10px] font-bold text-muted uppercase tracking-widest">Size</span>
                       <input
                         type="range"
-                        min={pdfTool === 'highlight' ? 10 : 1}
-                        max={pdfTool === 'highlight' ? 50 : 30}
-                        value={pdfTool === 'draw' ? drawSize : pdfTool === 'highlight' ? highlightSize : textSize}
+                        min={pdfTool === 'highlight' ? 10 : pdfTool === 'eraser' ? 10 : 1}
+                        max={pdfTool === 'highlight' ? 50 : pdfTool === 'eraser' ? 100 : 30}
+                        value={pdfTool === 'draw' ? drawSize : pdfTool === 'highlight' ? highlightSize : pdfTool === 'eraser' ? eraserSize : textSize}
                         onChange={(e) => {
                           const val = parseInt(e.target.value);
                           if (pdfTool === 'draw') setDrawSize(val);
                           else if (pdfTool === 'highlight') setHighlightSize(val);
+                          else if (pdfTool === 'eraser') setEraserSize(val);
                           else setTextSize(val);
                         }}
                         className="w-24 accent-primary h-1.5 bg-secondary rounded-full appearance-none [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:bg-primary [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:shadow-[0_0_10px_rgba(var(--color-primary),0.8)]"
                       />
                     </div>
                   )}
-                  <div className="flex items-center gap-4">
-                    <span className="text-[10px] font-bold text-muted uppercase tracking-widest">Color</span>
-                    <div className="relative w-7 h-7 rounded-full overflow-hidden ring-2 ring-white/20 shadow-inner">
-                       <input
-                         type="color"
-                         value={pdfTool === 'draw' ? drawColor : pdfTool === 'highlight' ? highlightColor : textColor}
-                         onChange={(e) => {
-                           const val = e.target.value;
-                           if (pdfTool === 'draw') setDrawColor(val);
-                           else if (pdfTool === 'highlight') setHighlightColor(val);
-                           else setTextColor(val);
-                         }}
-                         className="absolute -inset-2 w-12 h-12 cursor-pointer border-0 p-0"
-                       />
-                    </div>
-                  </div>
-                  {pdfTool === 'replace' && (
+                  {pdfTool !== 'eraser' && (
                     <div className="flex items-center gap-4">
-                      <span className="text-[10px] font-bold text-muted uppercase tracking-widest">Bg Color</span>
+                      <span className="text-[10px] font-bold text-muted uppercase tracking-widest">Color</span>
                       <div className="relative w-7 h-7 rounded-full overflow-hidden ring-2 ring-white/20 shadow-inner">
                          <input
                            type="color"
-                           value={replaceBgColor}
-                           onChange={(e) => setReplaceBgColor(e.target.value)}
+                           value={pdfTool === 'draw' ? drawColor : pdfTool === 'highlight' ? highlightColor : textColor}
+                           onChange={(e) => {
+                             const val = e.target.value;
+                             if (pdfTool === 'draw') setDrawColor(val);
+                             else if (pdfTool === 'highlight') setHighlightColor(val);
+                             else setTextColor(val);
+                           }}
                            className="absolute -inset-2 w-12 h-12 cursor-pointer border-0 p-0"
                          />
+                      </div>
+                    </div>
+                  )}
+                  {pdfTool === 'replace' && (
+                    <div className="flex items-center gap-4">
+                      <span className="text-[10px] font-bold text-muted uppercase tracking-widest">Bg Color</span>
+                      <div className="flex items-center gap-2">
+                        <div className="relative w-7 h-7 rounded-full overflow-hidden ring-2 ring-white/20 shadow-inner">
+                           <input
+                             type="color"
+                             value={replaceBgColor}
+                             onChange={(e) => setReplaceBgColor(e.target.value)}
+                             className="absolute -inset-2 w-12 h-12 cursor-pointer border-0 p-0"
+                           />
+                        </div>
+                        {'EyeDropper' in window && (
+                          <button
+                            onClick={async () => {
+                              try {
+                                const eyeDropper = new (window as any).EyeDropper();
+                                const result = await eyeDropper.open();
+                                setReplaceBgColor(result.sRGBHex);
+                              } catch (e) {
+                                // User canceled
+                              }
+                            }}
+                            className="p-1.5 bg-secondary hover:bg-primary/20 text-muted hover:text-primary rounded-lg transition-colors"
+                            title="吸取 PDF 背景色"
+                          >
+                            <Pipette className="w-4 h-4" />
+                          </button>
+                        )}
                       </div>
                     </div>
                   )}
