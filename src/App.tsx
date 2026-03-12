@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, forwardRef, useImperativeHandle } from 'react';
-import { Upload, Settings, MessageSquare, X, Send, Bot, User, MousePointer2, Highlighter, Pen, Eraser, ZoomIn, ZoomOut, Type, FileText, Wand2, Languages, AlignLeft, Check, Undo2, Download, Sparkles, FilePlus2, BarChart3, ChevronRight, Edit3 } from 'lucide-react';
+import { Upload, Settings, MessageSquare, X, Send, Bot, User, MousePointer2, Highlighter, Pen, Eraser, ZoomIn, ZoomOut, Type, FileText, Wand2, Languages, AlignLeft, Check, Undo2, Download, Sparkles, FilePlus2, BarChart3, ChevronRight, Edit3, PanelRightClose, PanelRightOpen, Copy } from 'lucide-react';
 import { GoogleGenAI } from '@google/genai';
 import { Document, Page, pdfjs } from 'react-pdf';
 import Markdown from 'react-markdown';
@@ -46,6 +46,7 @@ interface PageOverlayProps {
   highlightSize: number;
   textColor: string;
   textSize: number;
+  replaceBgColor: string;
   scale: number;
   pendingStampText: string | null;
   onStamp: () => void;
@@ -65,7 +66,7 @@ const hexToRgba = (hex: string, alpha: number) => {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 };
 
-const PageOverlay = forwardRef<PageOverlayRef, PageOverlayProps>(({ tool, drawColor, drawSize, highlightColor, highlightSize, textColor, textSize, scale, pendingStampText, onStamp, onModified }, ref) => {
+const PageOverlay = forwardRef<PageOverlayRef, PageOverlayProps>(({ tool, drawColor, drawSize, highlightColor, highlightSize, textColor, textSize, replaceBgColor, scale, pendingStampText, onStamp, onModified }, ref) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [isDrawing, setIsDrawing] = useState(false);
   const [ctx, setCtx] = useState<CanvasRenderingContext2D | null>(null);
@@ -289,7 +290,7 @@ const PageOverlay = forwardRef<PageOverlayRef, PageOverlayProps>(({ tool, drawCo
       
       if (rw > 5 && rh > 5) {
         saveState();
-        ctx.fillStyle = '#ffffff';
+        ctx.fillStyle = replaceBgColor;
         ctx.globalCompositeOperation = 'source-over';
         ctx.fillRect(rx, ry, rw, rh);
         
@@ -425,6 +426,10 @@ export default function App() {
   const [highlightSize, setHighlightSize] = useState(24);
   const [textColor, setTextColor] = useState('#000000');
   const [textSize, setTextSize] = useState(16);
+  const [replaceBgColor, setReplaceBgColor] = useState('#ffffff');
+  
+  const [isChatOpen, setIsChatOpen] = useState(true);
+  const [selectionRect, setSelectionRect] = useState<DOMRect | null>(null);
   
   const [aiConfig, setAiConfig] = useState<AIConfig>({
     provider: 'gemini',
@@ -453,7 +458,20 @@ export default function App() {
       if (selection && selection.toString().trim() !== '') {
         if (pdfContainerRef.current && pdfContainerRef.current.contains(selection.anchorNode)) {
           setSelectedText(selection.toString().trim());
+          try {
+             const range = selection.getRangeAt(0);
+             const rect = range.getBoundingClientRect();
+             setSelectionRect(rect);
+          } catch(e) {}
         }
+      } else {
+        // Delay clearing selectionRect slightly to allow clicking on floating menu
+        setTimeout(() => {
+          const newSelection = window.getSelection();
+          if (!newSelection || newSelection.toString().trim() === '') {
+            setSelectionRect(null);
+          }
+        }, 200);
       }
     };
 
@@ -879,6 +897,7 @@ export default function App() {
                       highlightSize={highlightSize}
                       textColor={textColor}
                       textSize={textSize}
+                      replaceBgColor={replaceBgColor}
                       scale={scale}
                       pendingStampText={pendingStampText}
                       onStamp={() => setPendingStampText(null)}
@@ -896,22 +915,24 @@ export default function App() {
               {/* Tool Options */}
               {pdfTool !== 'cursor' && pdfTool !== 'eraser' && (
                 <div className="flex items-center justify-between gap-6 px-5 py-3 bg-black/20 border-b border-white/5 animate-in slide-in-from-bottom-2 duration-200">
-                  <div className="flex items-center gap-4">
-                    <span className="text-[10px] font-bold text-muted uppercase tracking-widest">Size</span>
-                    <input
-                      type="range"
-                      min={pdfTool === 'highlight' ? 10 : 1}
-                      max={pdfTool === 'highlight' ? 50 : 30}
-                      value={pdfTool === 'draw' ? drawSize : pdfTool === 'highlight' ? highlightSize : textSize}
-                      onChange={(e) => {
-                        const val = parseInt(e.target.value);
-                        if (pdfTool === 'draw') setDrawSize(val);
-                        else if (pdfTool === 'highlight') setHighlightSize(val);
-                        else setTextSize(val);
-                      }}
-                      className="w-24 accent-primary h-1.5 bg-secondary rounded-full appearance-none [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:bg-primary [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:shadow-[0_0_10px_rgba(var(--color-primary),0.8)]"
-                    />
-                  </div>
+                  {pdfTool !== 'replace' && (
+                    <div className="flex items-center gap-4">
+                      <span className="text-[10px] font-bold text-muted uppercase tracking-widest">Size</span>
+                      <input
+                        type="range"
+                        min={pdfTool === 'highlight' ? 10 : 1}
+                        max={pdfTool === 'highlight' ? 50 : 30}
+                        value={pdfTool === 'draw' ? drawSize : pdfTool === 'highlight' ? highlightSize : textSize}
+                        onChange={(e) => {
+                          const val = parseInt(e.target.value);
+                          if (pdfTool === 'draw') setDrawSize(val);
+                          else if (pdfTool === 'highlight') setHighlightSize(val);
+                          else setTextSize(val);
+                        }}
+                        className="w-24 accent-primary h-1.5 bg-secondary rounded-full appearance-none [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:bg-primary [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:shadow-[0_0_10px_rgba(var(--color-primary),0.8)]"
+                      />
+                    </div>
+                  )}
                   <div className="flex items-center gap-4">
                     <span className="text-[10px] font-bold text-muted uppercase tracking-widest">Color</span>
                     <div className="relative w-7 h-7 rounded-full overflow-hidden ring-2 ring-white/20 shadow-inner">
@@ -928,6 +949,19 @@ export default function App() {
                        />
                     </div>
                   </div>
+                  {pdfTool === 'replace' && (
+                    <div className="flex items-center gap-4">
+                      <span className="text-[10px] font-bold text-muted uppercase tracking-widest">Bg Color</span>
+                      <div className="relative w-7 h-7 rounded-full overflow-hidden ring-2 ring-white/20 shadow-inner">
+                         <input
+                           type="color"
+                           value={replaceBgColor}
+                           onChange={(e) => setReplaceBgColor(e.target.value)}
+                           className="absolute -inset-2 w-12 h-12 cursor-pointer border-0 p-0"
+                         />
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -949,9 +983,35 @@ export default function App() {
         </div>
       </div>
 
+      {/* Floating Context Menu */}
+      {selectionRect && selectedText && (
+        <div
+          className="fixed z-50 bg-panel/95 backdrop-blur-xl border border-white/10 shadow-[0_10px_40px_rgba(0,0,0,0.3)] rounded-xl flex items-center p-1.5 gap-1 animate-in zoom-in-95 duration-200"
+          style={{
+            top: Math.max(10, selectionRect.top - 60),
+            left: selectionRect.left + selectionRect.width / 2,
+            transform: 'translateX(-50%)'
+          }}
+        >
+          <button onClick={() => { navigator.clipboard.writeText(selectedText); setSelectionRect(null); }} className="p-2 hover:bg-secondary rounded-lg text-xs font-bold flex items-center gap-1.5 text-content transition-colors" title="Copy">
+            <Copy className="w-3.5 h-3.5" />
+          </button>
+          <div className="w-px h-4 bg-border-subtle mx-1"></div>
+          <button onClick={() => { handleQuickAction('explain'); setIsChatOpen(true); }} className="p-2 hover:bg-secondary rounded-lg text-xs font-bold flex items-center gap-1.5 text-content transition-colors">
+            <Wand2 className="w-3.5 h-3.5 text-primary" /> 解释
+          </button>
+          <button onClick={() => { handleQuickAction('translate'); setIsChatOpen(true); }} className="p-2 hover:bg-secondary rounded-lg text-xs font-bold flex items-center gap-1.5 text-content transition-colors">
+            <Languages className="w-3.5 h-3.5 text-blue-400" /> 翻译
+          </button>
+          <button onClick={() => { handleQuickAction('summarize'); setIsChatOpen(true); }} className="p-2 hover:bg-secondary rounded-lg text-xs font-bold flex items-center gap-1.5 text-content transition-colors">
+            <AlignLeft className="w-3.5 h-3.5 text-green-400" /> 总结
+          </button>
+        </div>
+      )}
+
       {/* Right Panel: Chat Interface */}
-      <div className="w-[450px] flex flex-col bg-panel/95 backdrop-blur-2xl shadow-[-10px_0_30px_rgba(0,0,0,0.1)] z-20 transition-colors duration-300 border-l border-white/5">
-        <div className="h-16 border-b border-white/5 flex items-center justify-between px-6 bg-gradient-to-r from-transparent to-primary/5">
+      <div className={`flex flex-col bg-panel/95 backdrop-blur-2xl shadow-[-10px_0_30px_rgba(0,0,0,0.1)] z-20 transition-all duration-300 border-l border-white/5 ${isChatOpen ? 'w-[450px]' : 'w-0 border-l-0 overflow-hidden'}`}>
+        <div className="h-16 border-b border-white/5 flex items-center justify-between px-6 bg-gradient-to-r from-transparent to-primary/5 shrink-0 w-[450px]">
           <div className="flex items-center gap-3">
              <div className="w-8 h-8 rounded-lg bg-primary/20 flex items-center justify-center border border-primary/30">
                 <Bot className="w-4 h-4 text-primary" />
@@ -966,10 +1026,13 @@ export default function App() {
           </div>
           <div className="flex gap-2">
              <span className="text-xs font-mono bg-secondary px-2 py-1 rounded-md text-muted border border-border-subtle">{aiConfig.model}</span>
+             <button onClick={() => setIsChatOpen(false)} className="p-1.5 hover:bg-secondary rounded-lg text-muted hover:text-content transition-colors">
+               <PanelRightClose className="w-4 h-4" />
+             </button>
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-6 space-y-6 custom-scrollbar relative">
+        <div className="flex-1 overflow-y-auto p-6 space-y-6 custom-scrollbar relative w-[450px]">
            {/* Background glow */}
            <div className="absolute top-0 left-1/2 -translate-x-1/2 w-full h-64 bg-primary/5 blur-[100px] pointer-events-none"></div>
            
@@ -1052,7 +1115,7 @@ export default function App() {
           <div ref={chatEndRef} />
         </div>
 
-        <div className="p-5 bg-panel/80 backdrop-blur-xl border-t border-white/5 transition-colors duration-300 relative z-10">
+        <div className="p-5 bg-panel/80 backdrop-blur-xl border-t border-white/5 transition-colors duration-300 relative z-10 shrink-0 w-[450px]">
           {selectedText && (
             <div className="mb-4 animate-in slide-in-from-bottom-2">
               <div className="flex items-start justify-between bg-primary/10 border border-primary/30 rounded-xl p-3 mb-3 shadow-inner">
@@ -1123,6 +1186,17 @@ export default function App() {
           </div>
         </div>
       </div>
+
+      {/* Floating Chat Toggle Button */}
+      {!isChatOpen && (
+        <button 
+          onClick={() => setIsChatOpen(true)}
+          className="fixed right-6 top-6 z-40 bg-panel/90 backdrop-blur-md border border-white/10 shadow-[0_10px_30px_rgba(0,0,0,0.2)] p-3 rounded-2xl text-content hover:text-primary transition-all hover:scale-105 group"
+        >
+          <div className="absolute inset-0 bg-primary/20 rounded-2xl blur-xl opacity-0 group-hover:opacity-100 transition-opacity"></div>
+          <PanelRightOpen className="w-6 h-6 relative z-10" />
+        </button>
+      )}
 
       {/* Settings Modal */}
       {isSettingsOpen && (
