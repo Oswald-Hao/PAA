@@ -1,12 +1,13 @@
 import React, { useState, useEffect, useRef, forwardRef, useImperativeHandle } from 'react';
-import { Upload, Settings, MessageSquare, X, Send, Bot, User, MousePointer2, Highlighter, Pen, Eraser, ZoomIn, ZoomOut, Type, FileText, Wand2, Languages, AlignLeft, Check, Undo2, Download, Sparkles, FilePlus2, BarChart3, ChevronRight, Edit3, PanelRightClose, PanelRightOpen, Copy, Pipette, Hand } from 'lucide-react';
-import { GoogleGenAI } from '@google/genai';
+import { Upload, Settings, MessageSquare, X, Send, Bot, User, MousePointer2, Highlighter, Pen, Eraser, ZoomIn, ZoomOut, Type, FileText, Wand2, Languages, AlignLeft, Check, Undo2, Download, Sparkles, FilePlus2, BarChart3, ChevronRight, Edit3, PanelRightClose, PanelRightOpen, Copy, Pipette, Hand, BookOpen, Network, PenTool, LayoutTemplate, Quote, Loader2, ChevronDown, ChevronUp } from 'lucide-react';
+import { GoogleGenAI, Type as GenAIType } from '@google/genai';
 import { Document, Page, pdfjs } from 'react-pdf';
 import Markdown from 'react-markdown';
 import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
+import { Panel, Group as PanelGroup, Separator as PanelResizeHandle } from 'react-resizable-panels';
 import 'react-pdf/dist/Page/AnnotationLayer.css';
 import 'react-pdf/dist/Page/TextLayer.css';
 
@@ -36,6 +37,24 @@ type AIConfig = {
   apiKey: string;
   systemInstruction: string;
   temperature: number;
+};
+
+type PaperInsights = {
+  summary: string;
+  problem: string;
+  method: string;
+  experiment: string;
+  contribution: string;
+  relatedTopics: string[];
+  recommendedPapers: string[];
+};
+
+type InlineAIState = {
+  rect: DOMRect;
+  content: string;
+  type: 'explain' | 'summarize' | 'translate' | 'expand' | 'compare' | 'chart';
+  result: string;
+  isLoading: boolean;
 };
 
 interface PageOverlayProps {
@@ -458,6 +477,15 @@ export default function App() {
   const [panStart, setPanStart] = useState({ x: 0, y: 0 });
   const [scrollStart, setScrollStart] = useState({ left: 0, top: 0 });
   
+  const [activeTab, setActiveTab] = useState<'read' | 'graph' | 'write'>('read');
+  const [paperInsights, setPaperInsights] = useState<PaperInsights | null>(null);
+  const [isExtracting, setIsExtracting] = useState(false);
+  const [inlineAI, setInlineAI] = useState<InlineAIState | null>(null);
+  const [writeContent, setWriteContent] = useState('');
+  const [isGeneratingOutline, setIsGeneratingOutline] = useState(false);
+  const [refineContent, setRefineContent] = useState('');
+  const [isRefining, setIsRefining] = useState(false);
+  
   const [aiConfig, setAiConfig] = useState<AIConfig>({
     provider: 'gemini',
     model: 'gemini-3.1-pro-preview',
@@ -622,6 +650,52 @@ export default function App() {
     reader.readAsDataURL(file);
   };
 
+  const extractPaperInsights = async (base64: string) => {
+    const apiKey = aiConfig.apiKey || process.env.GEMINI_API_KEY;
+    if (!apiKey) return;
+    setIsExtracting(true);
+    try {
+      const ai = new GoogleGenAI({ apiKey });
+      const response = await ai.models.generateContent({
+        model: aiConfig.model,
+        contents: [
+          {
+            inlineData: {
+              mimeType: 'application/pdf',
+              data: base64
+            }
+          },
+          "Analyze this research paper and extract the following in JSON format (respond in Chinese): { 'summary': 'One sentence summary of core contribution (50 words max)', 'problem': 'The core problem being solved (100 words max)', 'method': 'The proposed method/approach (150 words max)', 'experiment': 'Key experimental results or setup (150 words max)', 'contribution': 'Main contributions (150 words max)', 'relatedTopics': ['topic1', 'topic2', 'topic3'], 'recommendedPapers': ['paper title 1', 'paper title 2', 'paper title 3'] }"
+        ],
+        config: {
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: GenAIType.OBJECT,
+            properties: {
+              summary: { type: GenAIType.STRING },
+              problem: { type: GenAIType.STRING },
+              method: { type: GenAIType.STRING },
+              experiment: { type: GenAIType.STRING },
+              contribution: { type: GenAIType.STRING },
+              relatedTopics: { type: GenAIType.ARRAY, items: { type: GenAIType.STRING } },
+              recommendedPapers: { type: GenAIType.ARRAY, items: { type: GenAIType.STRING } }
+            },
+            required: ['summary', 'problem', 'method', 'experiment', 'contribution', 'relatedTopics', 'recommendedPapers']
+          },
+          systemInstruction: 'You are an expert academic researcher. Extract concise, highly accurate insights from the paper.',
+        }
+      });
+      if (response.text) {
+        const data = JSON.parse(response.text);
+        setPaperInsights(data);
+      }
+    } catch (e) {
+      console.error('Failed to extract insights:', e);
+    } finally {
+      setIsExtracting(false);
+    }
+  };
+
   const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (file && file.type === 'application/pdf') {
@@ -632,11 +706,13 @@ export default function App() {
       setScale(1.0);
       setGlobalHistory([]);
       pageRefs.current = {};
+      setPaperInsights(null);
 
       const reader = new FileReader();
       reader.onload = () => {
         const base64 = (reader.result as string).split(',')[1];
         setPdfBase64(base64);
+        extractPaperInsights(base64);
       };
       reader.readAsDataURL(file);
     }
@@ -824,16 +900,70 @@ export default function App() {
     sendPrompt(input, selectedText);
   };
 
-  const handleQuickAction = (action: string) => {
+  const handleInlineAI = async (action: 'explain' | 'summarize' | 'translate' | 'expand' | 'compare' | 'chart', text: string, rect: DOMRect) => {
+    const apiKey = aiConfig.apiKey || process.env.GEMINI_API_KEY;
+    if (!apiKey) return;
+    
+    setInlineAI({
+      rect,
+      content: text,
+      type: action,
+      result: '',
+      isLoading: true
+    });
+    setSelectionRect(null);
+
     let prompt = '';
     switch (action) {
-      case 'explain': prompt = '请用通俗易懂的中文解释这段内容：'; break;
+      case 'explain': prompt = '请用通俗易懂的中文解释这段内容，可以补充相关背景知识：'; break;
       case 'summarize': prompt = '请用中文对这段内容进行简明扼要的总结：'; break;
       case 'translate': prompt = '请将这段内容准确地翻译成中文：'; break;
       case 'expand': prompt = '请根据这段内容，用中文进行详细的扩写和延伸：'; break;
-      case 'chart': prompt = '请根据这段内容的数据，生成一个图表 (返回 JSON 格式)：'; break;
+      case 'compare': prompt = '请对比这段内容与其他相关研究的区别和联系：'; break;
+      case 'chart': prompt = '请根据这段内容生成一个图表，严格返回 JSON 格式：```json\n{"chartType": "bar|line|pie", "data": [{"name": "A", "value": 10}]}\n```。内容：'; break;
     }
-    sendPrompt(prompt, selectedText);
+
+    try {
+      const ai = new GoogleGenAI({ apiKey });
+      const parts: any[] = [];
+      
+      if (pdfBase64) {
+        parts.push({
+          inlineData: {
+            data: pdfBase64,
+            mimeType: 'application/pdf'
+          }
+        });
+      }
+
+      parts.push({ text: `我附上了一份 PDF 文档。\n\n请重点关注这段话：\n"""\n${text}\n"""\n\n要求：${prompt}` });
+
+      const responseStream = await ai.models.generateContentStream({
+        model: aiConfig.model,
+        contents: { parts },
+        config: {
+          systemInstruction: 'You are an expert academic research assistant. Provide deep, concise, and highly accurate explanations.',
+          temperature: 0.7,
+        },
+      });
+
+      let fullText = '';
+      for await (const chunk of responseStream) {
+        fullText += chunk.text;
+        setInlineAI(prev => prev ? { ...prev, result: fullText } : null);
+      }
+    } catch (error: any) {
+      console.error('Error generating inline AI response:', error);
+      setInlineAI(prev => prev ? { ...prev, result: `抱歉，发生错误：${error.message || '请检查您的 API 密钥并重试。'}` } : null);
+    } finally {
+      setInlineAI(prev => prev ? { ...prev, isLoading: false } : null);
+    }
+  };
+
+  const handleQuickAction = (action: string) => {
+    if (selectionRect && selectedText) {
+      handleInlineAI(action as any, selectedText, selectionRect);
+    }
   };
 
   const handleUndo = () => {
@@ -865,9 +995,10 @@ export default function App() {
 
   return (
     <div data-theme={theme} className="flex h-screen w-full bg-background text-content font-sans overflow-hidden transition-colors duration-300 selection:bg-primary/30">
-      {/* Left Panel: PDF Viewer */}
-      <div className="flex-1 flex flex-col border-r border-border-subtle bg-panel relative transition-colors duration-300">
-        <div className="h-16 border-b border-border-subtle flex items-center justify-between px-6 bg-panel/80 backdrop-blur-md z-10 transition-colors duration-300">
+      <PanelGroup orientation="horizontal">
+        {/* Left Panel: PDF Viewer */}
+        <Panel defaultSize={70} minSize={30} className="flex flex-col relative bg-panel transition-colors duration-300">
+          <div className="h-16 border-b border-border-subtle flex items-center justify-between px-6 bg-panel/80 backdrop-blur-md z-10 transition-colors duration-300">
           <div className="flex items-center gap-3">
              <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-primary to-purple-600 flex items-center justify-center shadow-lg shadow-primary/20">
                 <Sparkles className="w-6 h-6 text-white" />
@@ -1027,6 +1158,7 @@ export default function App() {
               </Document>
             </div>
           )}
+        </div>
           
           {/* Floating Page Indicator */}
           {pdfFile && numPages > 0 && (
@@ -1133,11 +1265,10 @@ export default function App() {
               </div>
             </div>
           )}
-        </div>
-      </div>
+        </Panel>
 
       {/* Floating Context Menu */}
-      {selectionRect && selectedText && (
+      {selectionRect && selectedText && !inlineAI && (
         <div
           className="fixed z-50 bg-panel/95 backdrop-blur-xl border border-white/10 shadow-[0_10px_40px_rgba(0,0,0,0.3)] rounded-xl flex items-center p-1.5 gap-1 animate-in zoom-in-95 duration-200"
           style={{
@@ -1150,195 +1281,419 @@ export default function App() {
             <Copy className="w-3.5 h-3.5" />
           </button>
           <div className="w-px h-4 bg-border-subtle mx-1"></div>
-          <button onClick={() => { handleQuickAction('explain'); setIsChatOpen(true); }} className="p-2 hover:bg-secondary rounded-lg text-xs font-bold flex items-center gap-1.5 text-content transition-colors">
+          <button onClick={() => handleQuickAction('explain')} className="p-2 hover:bg-secondary rounded-lg text-xs font-bold flex items-center gap-1.5 text-content transition-colors">
             <Wand2 className="w-3.5 h-3.5 text-primary" /> 解释
           </button>
-          <button onClick={() => { handleQuickAction('translate'); setIsChatOpen(true); }} className="p-2 hover:bg-secondary rounded-lg text-xs font-bold flex items-center gap-1.5 text-content transition-colors">
+          <button onClick={() => handleQuickAction('translate')} className="p-2 hover:bg-secondary rounded-lg text-xs font-bold flex items-center gap-1.5 text-content transition-colors">
             <Languages className="w-3.5 h-3.5 text-blue-400" /> 翻译
           </button>
-          <button onClick={() => { handleQuickAction('summarize'); setIsChatOpen(true); }} className="p-2 hover:bg-secondary rounded-lg text-xs font-bold flex items-center gap-1.5 text-content transition-colors">
+          <button onClick={() => handleQuickAction('summarize')} className="p-2 hover:bg-secondary rounded-lg text-xs font-bold flex items-center gap-1.5 text-content transition-colors">
             <AlignLeft className="w-3.5 h-3.5 text-green-400" /> 总结
+          </button>
+          <button onClick={() => handleQuickAction('compare')} className="p-2 hover:bg-secondary rounded-lg text-xs font-bold flex items-center gap-1.5 text-content transition-colors">
+            <Network className="w-3.5 h-3.5 text-purple-400" /> 对比
           </button>
         </div>
       )}
 
-      {/* Right Panel: Chat Interface */}
-      <div className={`flex flex-col bg-panel/95 backdrop-blur-2xl shadow-[-10px_0_30px_rgba(0,0,0,0.1)] z-20 transition-all duration-300 border-l border-white/5 ${isChatOpen ? 'w-[450px]' : 'w-0 border-l-0 overflow-hidden'}`}>
-        <div className="h-16 border-b border-white/5 flex items-center justify-between px-6 bg-gradient-to-r from-transparent to-primary/5 shrink-0 w-[450px]">
-          <div className="flex items-center gap-3">
-             <div className="w-8 h-8 rounded-lg bg-primary/20 flex items-center justify-center border border-primary/30">
-                <Bot className="w-4 h-4 text-primary" />
-             </div>
-             <div>
-                <h2 className="font-bold text-sm tracking-wide">{aiConfig.provider === 'gemini' ? 'Gemini AI' : 'Zhipu AI'}</h2>
-                <div className="flex items-center gap-1.5">
-                   <div className="w-1.5 h-1.5 rounded-full bg-green-500 shadow-[0_0_5px_#22c55e]"></div>
-                   <span className="text-[10px] text-muted uppercase tracking-wider">{mode === 'create' ? 'Writing Mode' : 'Reading Mode'}</span>
-                </div>
-             </div>
+      {/* Inline AI Result Popover */}
+      {inlineAI && (
+        <div
+          className="fixed z-50 bg-panel/95 backdrop-blur-2xl border border-white/10 shadow-[0_20px_60px_rgba(0,0,0,0.4)] rounded-2xl flex flex-col w-[400px] max-h-[500px] animate-in slide-in-from-bottom-4 duration-300 overflow-hidden"
+          style={{
+            top: Math.max(10, inlineAI.rect.bottom + 10),
+            left: Math.min(window.innerWidth - 420, Math.max(10, inlineAI.rect.left)),
+          }}
+        >
+          <div className="flex items-center justify-between p-3 border-b border-white/5 bg-secondary/50">
+            <div className="flex items-center gap-2">
+              <Sparkles className="w-4 h-4 text-primary" />
+              <span className="text-xs font-bold uppercase tracking-wider text-muted">
+                {inlineAI.type === 'explain' ? 'AI 解释' : inlineAI.type === 'summarize' ? 'AI 总结' : inlineAI.type === 'translate' ? 'AI 翻译' : inlineAI.type === 'compare' ? '跨文献对比' : inlineAI.type === 'chart' ? '生成图表' : 'AI 扩写'}
+              </span>
+            </div>
+            <button onClick={() => setInlineAI(null)} className="p-1 hover:bg-white/10 rounded-md text-muted hover:text-content transition-colors">
+              <X className="w-4 h-4" />
+            </button>
           </div>
-          <div className="flex gap-2">
-             <span className="text-xs font-mono bg-secondary px-2 py-1 rounded-md text-muted border border-border-subtle">{aiConfig.model}</span>
-             <button onClick={() => setIsChatOpen(false)} className="p-1.5 hover:bg-secondary rounded-lg text-muted hover:text-content transition-colors">
-               <PanelRightClose className="w-4 h-4" />
-             </button>
+          <div className="p-4 overflow-y-auto custom-scrollbar flex-1 text-sm leading-relaxed">
+            <div className="pl-3 border-l-2 border-primary/30 text-muted italic mb-4 text-xs line-clamp-3">
+              "{inlineAI.content}"
+            </div>
+            {inlineAI.isLoading && !inlineAI.result ? (
+              <div className="flex items-center gap-2 text-primary">
+                <Loader2 className="w-4 h-4 animate-spin" />
+                <span className="text-xs font-medium">正在思考...</span>
+              </div>
+            ) : (
+              <div className="markdown-body prose prose-invert max-w-none prose-sm">
+                <Markdown>{inlineAI.result}</Markdown>
+                {inlineAI.type === 'chart' && inlineAI.result && (
+                  <DynamicChart 
+                    data={extractChartData(inlineAI.result)?.chartData?.data || []} 
+                    type={extractChartData(inlineAI.result)?.chartData?.chartType || 'bar'} 
+                  />
+                )}
+              </div>
+            )}
           </div>
         </div>
+      )}
 
-        <div className="flex-1 overflow-y-auto p-6 space-y-6 custom-scrollbar relative w-[450px]">
-           {/* Background glow */}
-           <div className="absolute top-0 left-1/2 -translate-x-1/2 w-full h-64 bg-primary/5 blur-[100px] pointer-events-none"></div>
-           
-          {messages.length === 0 ? (
-            <div className="h-full flex flex-col items-center justify-center text-center text-muted space-y-6 animate-in fade-in duration-700">
-              <div className="relative">
-                 <div className="absolute inset-0 bg-primary/20 rounded-full blur-xl animate-pulse"></div>
-                 <div className="w-20 h-20 rounded-2xl bg-panel border border-white/10 flex items-center justify-center relative z-10 shadow-2xl">
-                    <Bot className="w-10 h-10 text-primary" />
-                 </div>
+      {/* Right Panel: Research Hub */}
+      {isChatOpen && (
+        <>
+          <PanelResizeHandle className="w-1 bg-border-subtle hover:bg-primary/50 transition-colors cursor-col-resize relative z-30">
+            <div className="absolute top-1/2 -translate-y-1/2 -left-1 w-3 h-8 flex items-center justify-center">
+              <div className="w-1 h-4 bg-muted rounded-full"></div>
+            </div>
+          </PanelResizeHandle>
+          <Panel defaultSize={30} minSize={20} className="flex flex-col bg-panel/95 backdrop-blur-2xl z-20 transition-all duration-300">
+            <div className="h-16 border-b border-white/5 flex items-center justify-between px-4 bg-gradient-to-r from-transparent to-primary/5 shrink-0">
+              <div className="flex items-center gap-1 bg-secondary/50 p-1 rounded-xl">
+                <button onClick={() => setActiveTab('read')} className={cn("px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all", activeTab === 'read' ? "bg-panel text-primary shadow-sm" : "text-muted hover:text-content")}>
+                  <MessageSquare className="w-3.5 h-3.5" /> 问答
+                </button>
+                <button onClick={() => setActiveTab('graph')} className={cn("px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all", activeTab === 'graph' ? "bg-panel text-primary shadow-sm" : "text-muted hover:text-content")}>
+                  <LayoutTemplate className="w-3.5 h-3.5" /> 结构
+                </button>
+                <button onClick={() => setActiveTab('write')} className={cn("px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all", activeTab === 'write' ? "bg-panel text-primary shadow-sm" : "text-muted hover:text-content")}>
+                  <PenTool className="w-3.5 h-3.5" /> 写作
+                </button>
               </div>
-              <div className="space-y-2">
-                 <h3 className="text-lg font-bold text-content">准备就绪</h3>
-                 <p className="text-sm px-8 max-w-xs leading-relaxed">
-                   {mode === 'create' ? '告诉我想写什么，或者让我帮您生成图表数据。' : '选中左侧文本进行分析，或者直接向我提问。'}
-                 </p>
+              <div className="flex gap-2">
+                 <button onClick={() => setIsChatOpen(false)} className="p-1.5 hover:bg-secondary rounded-lg text-muted hover:text-content transition-colors">
+                   <PanelRightClose className="w-4 h-4" />
+                 </button>
               </div>
             </div>
-          ) : (
-            messages.map((msg) => (
-              <div key={msg.id} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'} animate-in slide-in-from-bottom-4 fade-in duration-300`}>
-                <div className={`flex items-start gap-3 max-w-[95%] ${msg.role === 'user' ? 'flex-row-reverse' : 'flex-row'}`}>
-                  <div className={`w-8 h-8 rounded-xl flex items-center justify-center shrink-0 shadow-lg ${msg.role === 'user' ? 'bg-gradient-to-br from-primary to-purple-600 text-white' : 'bg-panel border border-white/10 text-primary'}`}>
-                    {msg.role === 'user' ? <User className="w-4 h-4" /> : <Bot className="w-4 h-4" />}
-                  </div>
-                  <div className={`flex flex-col gap-2 ${msg.role === 'user' ? 'items-end' : 'items-start'} w-full`}>
-                    {msg.context && (
-                      <div className="bg-panel border border-primary/20 text-content text-xs p-3 rounded-xl max-w-full overflow-hidden text-ellipsis line-clamp-3 shadow-inner relative group">
-                        <div className="absolute left-0 top-0 bottom-0 w-1 bg-primary rounded-l-xl"></div>
-                        <span className="font-bold block mb-1 text-primary uppercase tracking-wider text-[10px]">Reference</span>
-                        <span className="italic opacity-80">"{msg.context}"</span>
+
+            <div className="flex-1 overflow-y-auto custom-scrollbar relative">
+               {/* Background glow */}
+               <div className="absolute top-0 left-1/2 -translate-x-1/2 w-full h-64 bg-primary/5 blur-[100px] pointer-events-none"></div>
+               
+               {activeTab === 'read' && (
+                 <div className="p-6 space-y-6 flex flex-col min-h-full">
+                  {messages.length === 0 ? (
+                    <div className="flex-1 flex flex-col items-center justify-center text-center text-muted space-y-6 animate-in fade-in duration-700">
+                      <div className="relative">
+                         <div className="absolute inset-0 bg-primary/20 rounded-full blur-xl animate-pulse"></div>
+                         <div className="w-20 h-20 rounded-2xl bg-panel border border-white/10 flex items-center justify-center relative z-10 shadow-2xl">
+                            <Bot className="w-10 h-10 text-primary" />
+                         </div>
                       </div>
-                    )}
-                    <div className={`px-5 py-4 rounded-2xl text-sm w-full shadow-lg ${
-                      msg.role === 'user'
-                        ? 'bg-gradient-to-br from-primary to-purple-600 text-white rounded-tr-sm'
-                        : 'bg-panel border border-white/5 text-content rounded-tl-sm'
-                    }`}>
-                      {msg.role === 'ai' ? (
-                        <div className="prose prose-sm max-w-none prose-zinc dark:prose-invert prose-p:leading-relaxed prose-pre:bg-black/50 prose-pre:border prose-pre:border-white/10">
-                          <Markdown>{msg.content}</Markdown>
-                          {msg.chartData && (
-                            <DynamicChart data={msg.chartData.data} type={msg.chartData.chartType} />
-                          )}
-                        </div>
-                      ) : (
-                        msg.content
-                      )}
+                      <div className="space-y-2">
+                         <h3 className="text-lg font-bold text-content">研究助手已就绪</h3>
+                         <p className="text-sm px-8 max-w-xs leading-relaxed">
+                           选中左侧文本进行分析，或者直接向我提问。
+                         </p>
+                      </div>
                     </div>
-                    {msg.role === 'ai' && msg.content && !isLoading && (
-                      <div className="flex items-center gap-2 mt-1 ml-1">
-                        <button 
-                          onClick={() => {
-                            setPdfTool('cursor');
-                            setPendingStampText(msg.content);
-                          }}
-                          className="text-[11px] font-bold uppercase tracking-wider flex items-center gap-1.5 text-muted hover:text-primary transition-all bg-panel px-3 py-1.5 rounded-lg border border-border-subtle hover:border-primary/50 hover:shadow-[0_0_10px_rgba(var(--color-primary),0.2)] group"
-                        >
-                          <MousePointer2 className="w-3 h-3 group-hover:-translate-y-0.5 transition-transform" /> 插入到 PDF
-                        </button>
+                  ) : (
+                    messages.map((msg) => (
+                      <div key={msg.id} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'} animate-in slide-in-from-bottom-4 fade-in duration-300`}>
+                        <div className={`flex items-start gap-3 max-w-[95%] ${msg.role === 'user' ? 'flex-row-reverse' : 'flex-row'}`}>
+                          <div className={`w-8 h-8 rounded-xl flex items-center justify-center shrink-0 shadow-lg ${msg.role === 'user' ? 'bg-gradient-to-br from-primary to-purple-600 text-white' : 'bg-panel border border-white/10 text-primary'}`}>
+                            {msg.role === 'user' ? <User className="w-4 h-4" /> : <Bot className="w-4 h-4" />}
+                          </div>
+                          <div className={`flex flex-col gap-2 ${msg.role === 'user' ? 'items-end' : 'items-start'} w-full`}>
+                            {msg.context && (
+                              <div className="bg-panel border border-primary/20 text-content text-xs p-3 rounded-xl max-w-full overflow-hidden text-ellipsis line-clamp-3 shadow-inner relative group">
+                                <div className="absolute left-0 top-0 bottom-0 w-1 bg-primary rounded-l-xl"></div>
+                                <span className="font-bold block mb-1 text-primary uppercase tracking-wider text-[10px]">Reference</span>
+                                <span className="italic opacity-80">"{msg.context}"</span>
+                              </div>
+                            )}
+                            <div className={`px-5 py-4 rounded-2xl text-sm w-full shadow-lg ${
+                              msg.role === 'user'
+                                ? 'bg-gradient-to-br from-primary to-purple-600 text-white rounded-tr-sm'
+                                : 'bg-panel border border-white/5 text-content rounded-tl-sm'
+                            }`}>
+                              {msg.role === 'ai' ? (
+                                <div className="prose prose-sm max-w-none prose-zinc dark:prose-invert prose-p:leading-relaxed prose-pre:bg-black/50 prose-pre:border prose-pre:border-white/10">
+                                  <Markdown>{msg.content}</Markdown>
+                                  {msg.chartData && (
+                                    <DynamicChart data={msg.chartData.data} type={msg.chartData.chartType} />
+                                  )}
+                                </div>
+                              ) : (
+                                msg.content
+                              )}
+                            </div>
+                            {msg.role === 'ai' && msg.content && !isLoading && (
+                              <div className="flex items-center gap-2 mt-1 ml-1">
+                                <button 
+                                  onClick={() => {
+                                    setPdfTool('cursor');
+                                    setPendingStampText(msg.content);
+                                  }}
+                                  className="text-[11px] font-bold uppercase tracking-wider flex items-center gap-1.5 text-muted hover:text-primary transition-all bg-panel px-3 py-1.5 rounded-lg border border-border-subtle hover:border-primary/50 hover:shadow-[0_0_10px_rgba(var(--color-primary),0.2)] group"
+                                >
+                                  <MousePointer2 className="w-3 h-3 group-hover:-translate-y-0.5 transition-transform" /> 插入到 PDF
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        </div>
                       </div>
-                    )}
-                  </div>
-                </div>
-              </div>
-            ))
-          )}
-          {isLoading && (
-            <div className="flex items-start gap-3 animate-in fade-in">
-              <div className="w-8 h-8 rounded-xl bg-panel border border-white/10 text-primary flex items-center justify-center shrink-0 shadow-lg">
-                <Bot className="w-4 h-4" />
-              </div>
-              <div className="bg-panel border border-white/5 text-content px-5 py-4 rounded-2xl rounded-tl-sm text-sm flex items-center gap-2 shadow-lg">
-                <div className="w-2 h-2 bg-primary rounded-full animate-bounce [animation-delay:-0.3s] shadow-[0_0_5px_rgba(var(--color-primary),0.8)]"></div>
-                <div className="w-2 h-2 bg-primary rounded-full animate-bounce [animation-delay:-0.15s] shadow-[0_0_5px_rgba(var(--color-primary),0.8)]"></div>
-                <div className="w-2 h-2 bg-primary rounded-full animate-bounce shadow-[0_0_5px_rgba(var(--color-primary),0.8)]"></div>
-              </div>
-            </div>
-          )}
-          <div ref={chatEndRef} />
-        </div>
+                    ))
+                  )}
+                  {isLoading && (
+                    <div className="flex items-start gap-3 animate-in fade-in">
+                      <div className="w-8 h-8 rounded-xl bg-panel border border-white/10 text-primary flex items-center justify-center shrink-0 shadow-lg">
+                        <Bot className="w-4 h-4" />
+                      </div>
+                      <div className="bg-panel border border-white/5 text-content px-5 py-4 rounded-2xl rounded-tl-sm text-sm flex items-center gap-2 shadow-lg">
+                        <div className="w-2 h-2 bg-primary rounded-full animate-bounce [animation-delay:-0.3s] shadow-[0_0_5px_rgba(var(--color-primary),0.8)]"></div>
+                        <div className="w-2 h-2 bg-primary rounded-full animate-bounce [animation-delay:-0.15s] shadow-[0_0_5px_rgba(var(--color-primary),0.8)]"></div>
+                        <div className="w-2 h-2 bg-primary rounded-full animate-bounce shadow-[0_0_5px_rgba(var(--color-primary),0.8)]"></div>
+                      </div>
+                    </div>
+                  )}
+                  <div ref={chatEndRef} />
+                 </div>
+               )}
 
-        <div className="p-5 bg-panel/80 backdrop-blur-xl border-t border-white/5 transition-colors duration-300 relative z-10 shrink-0 w-[450px]">
-          {selectedText && (
-            <div className="mb-4 animate-in slide-in-from-bottom-2">
-              <div className="flex items-start justify-between bg-primary/10 border border-primary/30 rounded-xl p-3 mb-3 shadow-inner">
-                <div className="text-xs text-content line-clamp-2 pr-2">
-                  <span className="font-bold text-primary uppercase tracking-wider text-[10px] mr-2">Selected</span>
-                  <span className="opacity-80">"{selectedText}"</span>
-                </div>
-                <button
-                  onClick={() => setSelectedText('')}
-                  className="text-muted hover:text-primary shrink-0 transition-colors bg-panel rounded-full p-1 border border-white/5"
-                >
-                  <X className="w-3 h-3" />
-                </button>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <button onClick={() => handleQuickAction('explain')} className="text-[11px] font-bold flex items-center gap-1.5 bg-panel hover:bg-primary hover:text-white text-content px-3 py-2 rounded-lg transition-all border border-border-subtle hover:border-primary shadow-sm hover:shadow-[0_0_15px_rgba(var(--color-primary),0.4)]">
-                  <Wand2 className="w-3 h-3" /> 解释
-                </button>
-                <button onClick={() => handleQuickAction('summarize')} className="text-[11px] font-bold flex items-center gap-1.5 bg-panel hover:bg-primary hover:text-white text-content px-3 py-2 rounded-lg transition-all border border-border-subtle hover:border-primary shadow-sm hover:shadow-[0_0_15px_rgba(var(--color-primary),0.4)]">
-                  <AlignLeft className="w-3 h-3" /> 总结
-                </button>
-                <button onClick={() => handleQuickAction('translate')} className="text-[11px] font-bold flex items-center gap-1.5 bg-panel hover:bg-primary hover:text-white text-content px-3 py-2 rounded-lg transition-all border border-border-subtle hover:border-primary shadow-sm hover:shadow-[0_0_15px_rgba(var(--color-primary),0.4)]">
-                  <Languages className="w-3 h-3" /> 翻译
-                </button>
-                <button onClick={() => handleQuickAction('expand')} className="text-[11px] font-bold flex items-center gap-1.5 bg-panel hover:bg-primary hover:text-white text-content px-3 py-2 rounded-lg transition-all border border-border-subtle hover:border-primary shadow-sm hover:shadow-[0_0_15px_rgba(var(--color-primary),0.4)]">
-                  <Pen className="w-3 h-3" /> 扩写
-                </button>
-                <button onClick={() => handleQuickAction('chart')} className="text-[11px] font-bold flex items-center gap-1.5 bg-panel hover:bg-primary hover:text-white text-content px-3 py-2 rounded-lg transition-all border border-border-subtle hover:border-primary shadow-sm hover:shadow-[0_0_15px_rgba(var(--color-primary),0.4)]">
-                  <BarChart3 className="w-3 h-3" /> 生成图表
-                </button>
-              </div>
+               {activeTab === 'graph' && (
+                 <div className="p-6 space-y-6">
+                   {isExtracting ? (
+                     <div className="flex flex-col items-center justify-center py-20 text-muted gap-4">
+                       <Loader2 className="w-8 h-8 animate-spin text-primary" />
+                       <p className="text-sm font-medium">正在智能解析论文结构...</p>
+                     </div>
+                   ) : paperInsights ? (
+                     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4">
+                       <div className="bg-gradient-to-br from-primary/10 to-purple-600/10 border border-primary/20 rounded-2xl p-5 shadow-inner">
+                         <h3 className="text-sm font-bold text-primary flex items-center gap-2 mb-2">
+                           <Sparkles className="w-4 h-4" /> 核心贡献 (One-Sentence Summary)
+                         </h3>
+                         <p className="text-sm leading-relaxed">{paperInsights.summary}</p>
+                       </div>
+                       
+                       <div className="space-y-4">
+                         <div className="bg-panel border border-border-subtle rounded-xl p-4 shadow-sm hover:border-primary/50 transition-colors">
+                           <h4 className="text-xs font-bold text-muted uppercase tracking-wider mb-2 flex items-center gap-2">
+                             <div className="w-2 h-2 rounded-full bg-red-500"></div> Problem (研究问题)
+                           </h4>
+                           <p className="text-sm leading-relaxed">{paperInsights.problem}</p>
+                         </div>
+                         <div className="bg-panel border border-border-subtle rounded-xl p-4 shadow-sm hover:border-primary/50 transition-colors">
+                           <h4 className="text-xs font-bold text-muted uppercase tracking-wider mb-2 flex items-center gap-2">
+                             <div className="w-2 h-2 rounded-full bg-blue-500"></div> Method (核心方法)
+                           </h4>
+                           <p className="text-sm leading-relaxed">{paperInsights.method}</p>
+                         </div>
+                         <div className="bg-panel border border-border-subtle rounded-xl p-4 shadow-sm hover:border-primary/50 transition-colors">
+                           <h4 className="text-xs font-bold text-muted uppercase tracking-wider mb-2 flex items-center gap-2">
+                             <div className="w-2 h-2 rounded-full bg-green-500"></div> Experiment (实验结果)
+                           </h4>
+                           <p className="text-sm leading-relaxed">{paperInsights.experiment}</p>
+                         </div>
+                         <div className="bg-panel border border-border-subtle rounded-xl p-4 shadow-sm hover:border-primary/50 transition-colors">
+                           <h4 className="text-xs font-bold text-muted uppercase tracking-wider mb-2 flex items-center gap-2">
+                             <div className="w-2 h-2 rounded-full bg-purple-500"></div> Contribution (主要贡献)
+                           </h4>
+                           <p className="text-sm leading-relaxed">{paperInsights.contribution}</p>
+                         </div>
+                       </div>
+
+                       {paperInsights.relatedTopics && paperInsights.relatedTopics.length > 0 && (
+                         <div className="bg-panel border border-border-subtle rounded-xl p-4 shadow-sm">
+                           <h4 className="text-xs font-bold text-muted uppercase tracking-wider mb-3 flex items-center gap-2">
+                             <Sparkles className="w-3.5 h-3.5 text-primary" /> 相关研究主题
+                           </h4>
+                           <div className="flex flex-wrap gap-2">
+                             {paperInsights.relatedTopics.map((topic, i) => (
+                               <span key={i} className="px-2.5 py-1 bg-secondary/80 text-content text-xs rounded-md border border-border-subtle">
+                                 {topic}
+                               </span>
+                             ))}
+                           </div>
+                         </div>
+                       )}
+
+                       {paperInsights.recommendedPapers && paperInsights.recommendedPapers.length > 0 && (
+                         <div className="bg-panel border border-border-subtle rounded-xl p-4 shadow-sm">
+                           <h4 className="text-xs font-bold text-muted uppercase tracking-wider mb-3 flex items-center gap-2">
+                             <BookOpen className="w-3.5 h-3.5 text-primary" /> 推荐阅读论文
+                           </h4>
+                           <ul className="space-y-2">
+                             {paperInsights.recommendedPapers.map((paper, i) => (
+                               <li key={i} className="text-sm text-content flex items-start gap-2">
+                                 <span className="text-primary font-bold mt-0.5">{i + 1}.</span>
+                                 <span className="leading-relaxed">{paper}</span>
+                               </li>
+                             ))}
+                           </ul>
+                         </div>
+                       )}
+                     </div>
+                   ) : (
+                     <div className="flex flex-col items-center justify-center py-20 text-muted gap-4 text-center">
+                       <BookOpen className="w-12 h-12 opacity-50" />
+                       <p className="text-sm max-w-[200px]">请先上传 PDF 论文，AI 将自动解析论文结构与核心洞察。</p>
+                     </div>
+                   )}
+                 </div>
+               )}
+
+               {activeTab === 'write' && (
+                 <div className="p-6 space-y-6 flex flex-col h-full">
+                   <div className="bg-panel border border-border-subtle rounded-2xl p-4 flex flex-col gap-4 shadow-sm">
+                     <h3 className="text-sm font-bold flex items-center gap-2">
+                       <PenTool className="w-4 h-4 text-primary" /> 论文构思与大纲生成
+                     </h3>
+                     <textarea
+                       value={writeContent}
+                       onChange={(e) => setWriteContent(e.target.value)}
+                       placeholder="输入您的研究想法、核心创新点或实验结果，AI 将为您生成完整的论文大纲..."
+                       className="w-full h-32 bg-secondary border border-border-subtle rounded-xl p-3 text-sm resize-none focus:outline-none focus:border-primary/50 custom-scrollbar"
+                     />
+                     <button 
+                       disabled={!writeContent.trim() || isGeneratingOutline}
+                       onClick={async () => {
+                         const apiKey = aiConfig.apiKey || process.env.GEMINI_API_KEY;
+                         if (!apiKey) return;
+                         setIsGeneratingOutline(true);
+                         try {
+                           const ai = new GoogleGenAI({ apiKey });
+                           const response = await ai.models.generateContent({
+                             model: aiConfig.model,
+                             contents: `基于以下研究想法，生成一份详细的学术论文大纲（包含 Introduction, Related Work, Method, Experiment, Conclusion 等部分），并推荐3-5篇可能相关的参考文献方向：\n\n${writeContent}`,
+                             config: { systemInstruction: 'You are an expert academic writer and researcher.' }
+                           });
+                           if (response.text) {
+                             setMessages(prev => [...prev, { id: Date.now().toString(), role: 'user', content: '请帮我生成论文大纲：\n' + writeContent }, { id: (Date.now()+1).toString(), role: 'ai', content: response.text! }]);
+                             setActiveTab('read');
+                             setWriteContent('');
+                           }
+                         } finally {
+                           setIsGeneratingOutline(false);
+                         }
+                       }}
+                       className="w-full bg-primary hover:bg-primary-hover text-white font-bold text-sm py-2.5 rounded-xl transition-colors flex items-center justify-center gap-2 disabled:opacity-50 shadow-md"
+                     >
+                       {isGeneratingOutline ? <Loader2 className="w-4 h-4 animate-spin" /> : <Wand2 className="w-4 h-4" />}
+                       生成论文大纲
+                     </button>
+                   </div>
+
+                   <div className="bg-panel border border-border-subtle rounded-2xl p-4 flex flex-col gap-4 shadow-sm">
+                     <h3 className="text-sm font-bold flex items-center gap-2">
+                       <Sparkles className="w-4 h-4 text-primary" /> 润色与逻辑优化
+                     </h3>
+                     <textarea
+                       value={refineContent}
+                       onChange={(e) => setRefineContent(e.target.value)}
+                       placeholder="输入您写好的段落，AI 将帮您润色语言、优化逻辑，并使其更符合学术规范..."
+                       className="w-full h-32 bg-secondary border border-border-subtle rounded-xl p-3 text-sm resize-none focus:outline-none focus:border-primary/50 custom-scrollbar"
+                     />
+                     <button 
+                       disabled={!refineContent.trim() || isRefining}
+                       onClick={async () => {
+                         const apiKey = aiConfig.apiKey || process.env.GEMINI_API_KEY;
+                         if (!apiKey) return;
+                         setIsRefining(true);
+                         try {
+                           const ai = new GoogleGenAI({ apiKey });
+                           const response = await ai.models.generateContent({
+                             model: aiConfig.model,
+                             contents: `请作为一名资深学术编辑，对以下段落进行润色。要求：\n1. 修正语法和拼写错误\n2. 提升学术表达的严谨性和流畅度\n3. 优化句子之间的逻辑连接\n4. 提供修改前后的对比，并简要说明修改原因。\n\n待润色段落：\n${refineContent}`,
+                             config: { systemInstruction: 'You are an expert academic editor.' }
+                           });
+                           if (response.text) {
+                             setMessages(prev => [...prev, { id: Date.now().toString(), role: 'user', content: '请帮我润色这段文字：\n' + refineContent }, { id: (Date.now()+1).toString(), role: 'ai', content: response.text! }]);
+                             setActiveTab('read');
+                             setRefineContent('');
+                           }
+                         } finally {
+                           setIsRefining(false);
+                         }
+                       }}
+                       className="w-full bg-panel border border-primary/50 text-primary hover:bg-primary/10 font-bold text-sm py-2.5 rounded-xl transition-colors flex items-center justify-center gap-2 disabled:opacity-50 shadow-sm"
+                     >
+                       {isRefining ? <Loader2 className="w-4 h-4 animate-spin" /> : <Edit3 className="w-4 h-4" />}
+                       开始润色
+                     </button>
+                   </div>
+                 </div>
+               )}
             </div>
-          )}
-          <div className="flex gap-2 mb-2">
-            <button 
-              onClick={() => {
-                setPdfTool('text');
-                // Optional: show a small toast or hint that text mode is active
-              }}
-              className="text-[11px] font-bold uppercase tracking-wider flex items-center gap-1.5 text-muted hover:text-primary transition-all bg-panel px-3 py-1.5 rounded-lg border border-border-subtle hover:border-primary/50 hover:shadow-[0_0_10px_rgba(var(--color-primary),0.2)]"
-            >
-              <Edit3 className="w-3 h-3" /> 手动输入文字
-            </button>
-          </div>
-          <div className="relative flex items-end group">
-            <textarea
-              ref={chatInputRef}
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.shiftKey) {
-                  e.preventDefault();
-                  handleSendMessage();
-                }
-              }}
-              placeholder="输入指令，或让 AI 帮您生成图表..."
-              className="w-full bg-secondary/50 border border-border-subtle focus:bg-panel focus:border-primary focus:ring-4 focus:ring-primary/10 rounded-2xl pl-5 pr-14 py-4 text-sm resize-none outline-none transition-all text-content placeholder:text-muted shadow-inner"
-              rows={1}
-              style={{ minHeight: '56px', maxHeight: '150px' }}
-            />
-            <button
-              onClick={handleSendMessage}
-              disabled={(!input.trim() && !selectedText) || isLoading}
-              className="absolute right-2 bottom-2 p-2.5 bg-gradient-to-br from-primary to-purple-600 text-white rounded-xl hover:shadow-[0_0_20px_rgba(var(--color-primary),0.6)] disabled:opacity-50 disabled:hover:shadow-none transition-all group-focus-within:scale-105"
-            >
-              <Send className="w-4 h-4" />
-            </button>
-          </div>
-        </div>
-      </div>
+
+            {/* Input Area (Only for Read tab) */}
+            {activeTab === 'read' && (
+              <div className="p-5 bg-panel/80 backdrop-blur-xl border-t border-white/5 transition-colors duration-300 relative z-10 shrink-0">
+                {selectedText && (
+                  <div className="mb-4 animate-in slide-in-from-bottom-2">
+                    <div className="flex items-start justify-between bg-primary/10 border border-primary/30 rounded-xl p-3 mb-3 shadow-inner">
+                      <div className="text-xs text-content line-clamp-2 pr-2">
+                        <span className="font-bold text-primary uppercase tracking-wider text-[10px] mr-2">Selected</span>
+                        <span className="opacity-80">"{selectedText}"</span>
+                      </div>
+                      <button
+                        onClick={() => setSelectedText('')}
+                        className="text-muted hover:text-primary shrink-0 transition-colors bg-panel rounded-full p-1 border border-white/5"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <button onClick={() => handleQuickAction('explain')} className="text-[11px] font-bold flex items-center gap-1.5 bg-panel hover:bg-primary hover:text-white text-content px-3 py-2 rounded-lg transition-all border border-border-subtle hover:border-primary shadow-sm hover:shadow-[0_0_15px_rgba(var(--color-primary),0.4)]">
+                        <Wand2 className="w-3 h-3" /> 解释
+                      </button>
+                      <button onClick={() => handleQuickAction('summarize')} className="text-[11px] font-bold flex items-center gap-1.5 bg-panel hover:bg-primary hover:text-white text-content px-3 py-2 rounded-lg transition-all border border-border-subtle hover:border-primary shadow-sm hover:shadow-[0_0_15px_rgba(var(--color-primary),0.4)]">
+                        <AlignLeft className="w-3 h-3" /> 总结
+                      </button>
+                      <button onClick={() => handleQuickAction('translate')} className="text-[11px] font-bold flex items-center gap-1.5 bg-panel hover:bg-primary hover:text-white text-content px-3 py-2 rounded-lg transition-all border border-border-subtle hover:border-primary shadow-sm hover:shadow-[0_0_15px_rgba(var(--color-primary),0.4)]">
+                        <Languages className="w-3 h-3" /> 翻译
+                      </button>
+                      <button onClick={() => handleQuickAction('expand')} className="text-[11px] font-bold flex items-center gap-1.5 bg-panel hover:bg-primary hover:text-white text-content px-3 py-2 rounded-lg transition-all border border-border-subtle hover:border-primary shadow-sm hover:shadow-[0_0_15px_rgba(var(--color-primary),0.4)]">
+                        <Pen className="w-3 h-3" /> 扩写
+                      </button>
+                      <button onClick={() => handleQuickAction('chart')} className="text-[11px] font-bold flex items-center gap-1.5 bg-panel hover:bg-primary hover:text-white text-content px-3 py-2 rounded-lg transition-all border border-border-subtle hover:border-primary shadow-sm hover:shadow-[0_0_15px_rgba(var(--color-primary),0.4)]">
+                        <BarChart3 className="w-3 h-3" /> 生成图表
+                      </button>
+                    </div>
+                  </div>
+                )}
+                <div className="flex gap-2 mb-2">
+                  <button 
+                    onClick={() => setPdfTool('text')}
+                    className="text-[11px] font-bold uppercase tracking-wider flex items-center gap-1.5 text-muted hover:text-primary transition-all bg-panel px-3 py-1.5 rounded-lg border border-border-subtle hover:border-primary/50 hover:shadow-[0_0_10px_rgba(var(--color-primary),0.2)]"
+                  >
+                    <Edit3 className="w-3 h-3" /> 手动输入文字
+                  </button>
+                </div>
+                <div className="relative flex items-end group">
+                  <textarea
+                    ref={chatInputRef}
+                    value={input}
+                    onChange={(e) => setInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault();
+                        handleSendMessage();
+                      }
+                    }}
+                    placeholder="向 AI 提问或输入指令..."
+                    className="w-full bg-secondary/50 border border-border-subtle focus:bg-panel focus:border-primary focus:ring-4 focus:ring-primary/10 rounded-2xl pl-5 pr-14 py-4 text-sm resize-none outline-none transition-all text-content placeholder:text-muted shadow-inner"
+                    rows={1}
+                    style={{ minHeight: '56px', maxHeight: '150px' }}
+                  />
+                  <button
+                    onClick={handleSendMessage}
+                    disabled={(!input.trim() && !selectedText) || isLoading}
+                    className="absolute right-2 bottom-2 p-2.5 bg-gradient-to-br from-primary to-purple-600 text-white rounded-xl hover:shadow-[0_0_20px_rgba(var(--color-primary),0.6)] disabled:opacity-50 disabled:hover:shadow-none transition-all group-focus-within:scale-105"
+                  >
+                    <Send className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+            )}
+          </Panel>
+        </>
+      )}
+      </PanelGroup>
 
       {/* Floating Chat Toggle Button */}
       {!isChatOpen && (
